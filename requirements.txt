@@ -1,0 +1,15 @@
+# torch and torchvision are installed separately in install.bat
+# to avoid memory runaway from overlapping large downloads.
+# Do NOT add them here.
+
+ultralytics>=8.0.0
+opencv-python
+boxmot
+PyQt6
+pywin32
+pyyaml
+numpy
+keyboard
+pyserial
+dxcam
+interception-python

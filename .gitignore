@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Dataset downloads (contain absolute paths with username)
+rf_dataset/
+rf_rivals/
+
+# Training outputs (contain absolute paths with username)
+runs/
+train_log.txt
+rivals_train_log.txt
+
+# Logs
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+*.zip

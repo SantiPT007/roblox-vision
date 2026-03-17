@@ -1,0 +1,99 @@
+capture:
+  target_window: "Roblox"
+  fps_cap: 60
+  region: null                  # null = full window rect, or [x, y, w, h]
+
+detection:
+  model: "models/yolov8n-default.pt"
+  confidence: 0.15
+  nms_iou: 0.45
+  use_background_subtraction: false  # keep off for moving-camera games; enable only for fixed-camera scenes
+  device: "cuda"                # "cuda" or "cpu"
+  detect_all_classes: false     # false = COCO class 0 (person) only; true = all classes (for custom models)
+
+tracking:
+  max_age: 30
+  min_hits: 2
+
+hotkeys:
+  detection_toggle: "F6"        # toggle character detection on/off
+  lock_toggle: "F7"             # toggle mouse lock on/off
+  lock_hold: "F4"               # hold to lock, release to stop
+
+cursor_follow:
+  enabled: false
+  fps_mode: false               # true = camera-controlled games; uses low-gain movement + deadzone, no prediction
+  smoothing: 0.12               # 0.0 = instant snap, 1.0 = no movement  (unused in FPS mode)
+  speed: 1.0                    # movement speed multiplier
+  follow_radius: 150            # FOV circle radius in pixels
+  follow_point: "chest"         # "head", "chest", or "center"
+  prediction_ms: 60             # ms to extrapolate target position forward (unused in FPS mode)
+  deadzone: 5                   # pixels — no correction within this radius (FPS mode only)
+  target_class: null            # null = any class; 1 = enemies only with rivals.pt (class 1 = "roblox avatar")
+
+# Presets — applied all at once from the GUI preset dropdown.
+# You can add your own presets here.
+presets:
+  # --- Normal mode (cursor visible, moves on screen) ---
+  Flick:
+    fps_mode: false
+    smoothing: 0.05
+    speed: 2.0
+    follow_radius: 120
+    follow_point: "head"
+    prediction_ms: 80
+    deadzone: 0
+  Precise:
+    fps_mode: false
+    smoothing: 0.12
+    speed: 1.4
+    follow_radius: 150
+    follow_point: "chest"
+    prediction_ms: 60
+    deadzone: 0
+  Smooth:
+    fps_mode: false
+    smoothing: 0.30
+    speed: 1.0
+    follow_radius: 220
+    follow_point: "chest"
+    prediction_ms: 40
+    deadzone: 0
+  # --- FPS mode (mouse controls camera, no visible cursor) ---
+  FPS Flick:
+    fps_mode: true
+    smoothing: 0.55
+    speed: 1.2
+    follow_radius: 200
+    follow_point: "head"
+    prediction_ms: 60
+    deadzone: 4
+  FPS Smooth:
+    fps_mode: true
+    smoothing: 0.75
+    speed: 0.9
+    follow_radius: 250
+    follow_point: "chest"
+    prediction_ms: 40
+    deadzone: 6
+  FPS Gentle:
+    fps_mode: true
+    smoothing: 0.88
+    speed: 0.7
+    follow_radius: 300
+    follow_point: "chest"
+    prediction_ms: 20
+    deadzone: 8
+
+overlay:
+  enabled: true
+  show_boxes: true
+  show_trails: true
+  show_velocity: true
+  show_radius_circle: true
+  show_minimap: true
+  trail_length: 20
+  active_color: [0, 255, 80]
+  inactive_color: [0, 200, 255]
+  box_thickness: 1
+  font_scale: 0.5
