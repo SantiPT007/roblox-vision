@@ -51,6 +51,11 @@ _DEFAULT_CONFIG = {
         "use_background_subtraction": False,
         "device": "cuda",
         "detect_all_classes": False,
+        "auto_confidence": False,
+        "auto_conf_min": 0.08,
+        "auto_conf_max": 0.60,
+        "auto_conf_target": 3,
+        "team_detection": False,
     },
     "tracking": {
         "max_age": 30,
@@ -65,12 +70,30 @@ _DEFAULT_CONFIG = {
         "enabled": False,
         "fps_mode": False,
         "smoothing": 0.12,
+        "smoothing_curve": "linear",
         "speed": 1.0,
         "follow_radius": 150,
         "follow_point": "chest",
         "prediction_ms": 60,
         "deadzone": 5,
         "target_class": None,
+        "prefer_closest_depth": False,
+        "snapback_threshold": 15,
+        "snapback_pause_ms": 200,
+    },
+    "recoil": {
+        "enabled": False,
+        "fire_key": "left",
+        "step_ms": 80,
+        "reset_ms": 600,
+        "pattern": [[0, -5], [0, -5], [1, -4], [0, -4], [1, -3], [0, -3], [-1, -3], [0, -2]],
+    },
+    "triggerbot": {
+        "enabled": False,
+        "hotkey": "F5",
+        "delay_min_ms": 50,
+        "delay_max_ms": 120,
+        "padding": 5,
     },
     "overlay": {
         "enabled": True,
@@ -79,12 +102,17 @@ _DEFAULT_CONFIG = {
         "show_velocity": True,
         "show_radius_circle": True,
         "show_minimap": True,
+        "show_direction_cone": True,
         "trail_length": 20,
         "active_color": [0, 255, 80],
         "inactive_color": [0, 200, 255],
         "box_thickness": 1,
         "font_scale": 0.5,
     },
+    "perf_dashboard": {
+        "enabled": False,
+    },
+    "recoil_presets": {},
 }
 
 
@@ -102,7 +130,7 @@ def save_config(path: str, config: dict) -> None:
     """Write the live config back to disk, stripping the read-only 'presets' key."""
     import copy
     to_save = copy.deepcopy(config)
-    to_save.pop("presets", None)   # presets are defined by the user in yaml, don't overwrite
+    to_save.pop("presets", None)
     with open(path, "w") as f:
         yaml.dump(to_save, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
     logger.info("Config saved to '%s'.", path)
@@ -134,7 +162,8 @@ class SharedState:
         self.active_target_id: Optional[int] = None
         self.detection_active: bool = True
         self.stop_event = threading.Event()
-        self.detector = None  # set by inference_loop once detector is ready
+        self.detector = None
+        self.tracker = None
 
     def set_tracks(self, tracks: List[dict]) -> None:
         with self._lock:
@@ -173,7 +202,7 @@ def inference_loop(
     from tracker import Tracker
 
     detector = Detector(config)
-    tracker = Tracker(config)
+    tracker  = Tracker(config)
 
     try:
         detector.load()
@@ -182,7 +211,9 @@ def inference_loop(
         logger.error("Failed to load detector/tracker: %s", exc, exc_info=True)
         return
 
-    state.detector = detector  # expose for live config changes (model swap, etc.)
+    state.detector = detector
+    state.tracker  = tracker
+
     last_frame: Optional[object] = None
     frame_count = 0
     diag_frames = 0
@@ -195,7 +226,6 @@ def inference_loop(
             time.sleep(0.05)
             continue
 
-        # Drain queue to get latest frame
         frame = None
         while True:
             try:
@@ -223,12 +253,12 @@ def inference_loop(
             state.set_tracks(tracks)
             state.inference_fps = detector.inference_fps
 
-        # Diagnostics every 5 seconds
         now = time.time()
         if now - diag_last >= 5.0:
             logger.info(
-                "[DIAG] inf_frames=%d  total_detections=%d  tracks=%d  inf_fps=%.1f",
-                diag_frames, diag_detections, len(state.get_tracks()), detector.inference_fps,
+                "[DIAG] inf_frames=%d  total_detections=%d  tracks=%d  inf_fps=%.1f  conf=%.2f",
+                diag_frames, diag_detections, len(state.get_tracks()),
+                detector.inference_fps, detector.current_confidence,
             )
             diag_frames = 0
             diag_detections = 0
@@ -247,33 +277,27 @@ def main():
     parser.add_argument("--no-overlay", action="store_true", help="Run without overlay")
     args = parser.parse_args()
 
-    # Change working directory to script location so relative model/config paths work
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
 
     config = load_config(args.config)
 
-    # Disable overlay if requested
     if args.no_overlay:
         config["overlay"]["enabled"] = False
 
     state = SharedState()
 
-    # Pre-load torch DLLs on the main thread before Qt or any background
-    # thread starts. Importing torch from a background thread while Qt is
-    # simultaneously loading its own DLLs triggers WinError 1114 (DLL loader lock).
+    # Pre-load torch DLLs on the main thread before Qt starts
     try:
-        import torch  # noqa: F401
+        import torch          # noqa: F401
         from ultralytics import YOLO  # noqa: F401
     except Exception:
-        pass  # Missing torch is handled gracefully in InferenceThread
+        pass
 
-    # --- Qt must be initialised before any QWidget ---
     from PyQt6.QtWidgets import QApplication
     app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(False)  # Keep running when control panel closed
+    app.setQuitOnLastWindowClosed(False)
 
-    # --- Get screen size ---
     screen = app.primaryScreen().geometry()
     screen_size = (screen.width(), screen.height())
 
@@ -284,10 +308,7 @@ def main():
     capture = CaptureThread(config)
     capture.start()
 
-    # Patch capture to use the shared queue by monkeypatching its internal queue
-    # (CaptureThread already uses its own internal queue; we bridge here)
     def _bridge_frames():
-        """Bridge frames from CaptureThread internal queue → shared frame_queue."""
         while not state.stop_event.is_set():
             frame = capture.get_frame()
             if frame is not None:
@@ -341,10 +362,10 @@ def main():
             logger.warning("Could not install detection hotkey: %s", exc)
     _setup_detection_hotkey()
 
-    # Sync cursor state to shared state each second
+    # Sync cursor state to shared state
     def _sync_cursor_state():
         while not state.stop_event.is_set():
-            state.follow_active = cursor.follow_active
+            state.follow_active    = cursor.follow_active
             state.active_target_id = cursor.active_target_id
             time.sleep(0.05)
 
@@ -362,12 +383,11 @@ def main():
             get_tracks_fn=state.get_tracks,
             get_cursor_state_fn=state.get_cursor_state,
         )
-        # Feed FPS values into overlay every repaint cycle via a QTimer
         from PyQt6.QtCore import QTimer
 
         def _update_overlay_fps():
             if overlay:
-                overlay.capture_fps = state.capture_fps
+                overlay.capture_fps   = state.capture_fps
                 overlay.inference_fps = state.inference_fps
 
         fps_timer = QTimer()
@@ -375,12 +395,33 @@ def main():
         fps_timer.timeout.connect(_update_overlay_fps)
         fps_timer.start()
 
+    # --- Performance dashboard ---
+    perf_dashboard = None
+
+    def _toggle_perf_dashboard():
+        nonlocal perf_dashboard
+        if perf_dashboard is None:
+            from perf_monitor import PerfDashboard
+            perf_dashboard = PerfDashboard(get_status_fn=state.get_status)
+            perf_dashboard.show()
+            config["perf_dashboard"]["enabled"] = True
+            logger.info("Performance dashboard opened.")
+        else:
+            if perf_dashboard.isVisible():
+                perf_dashboard.hide()
+                config["perf_dashboard"]["enabled"] = False
+            else:
+                perf_dashboard.show()
+                config["perf_dashboard"]["enabled"] = True
+
+    if config.get("perf_dashboard", {}).get("enabled", False):
+        _toggle_perf_dashboard()
+
     # --- Config change handler ---
     def on_config_change(section: str, key: str, value):
         config[section][key] = value
         logger.debug("Config updated: [%s] %s = %r", section, key, value)
 
-        # Propagate live updates
         if section == "detection":
             det = state.detector
             if det is not None:
@@ -390,15 +431,40 @@ def main():
                     det.set_confidence(value)
                 elif key == "detect_all_classes":
                     det.set_detect_all_classes(bool(value))
-        if section == "cursor_follow":
+                elif key == "auto_confidence":
+                    det.set_auto_confidence(bool(value))
+                elif key in ("auto_conf_min", "auto_conf_max", "auto_conf_target"):
+                    det.set_auto_conf_params(
+                        config["detection"]["auto_conf_min"],
+                        config["detection"]["auto_conf_max"],
+                        config["detection"]["auto_conf_target"],
+                    )
+                elif key == "team_detection":
+                    trk = state.tracker
+                    if trk is not None:
+                        trk.set_team_detection(bool(value))
+
+        elif section == "cursor_follow":
             cursor.update_config(key, value)
             if key == "enabled":
                 cursor.set_enabled(bool(value))
-        if section == "hotkeys":
-            # lock_toggle and lock_hold are live-updated via cursor.update_config
+
+        elif section == "recoil":
+            cursor.update_recoil(key, value)
+
+        elif section == "triggerbot":
+            cursor.update_triggerbot(key, value)
+
+        elif section == "hotkeys":
             cursor.update_config(key, value)
-        if section == "overlay" and overlay:
+
+        elif section == "overlay" and overlay:
             overlay.update_config(key, value)
+
+        elif section == "perf_dashboard":
+            if key == "enabled":
+                # Handled by the toggle function
+                pass
 
     # --- Control panel ---
     config_path = os.path.abspath(args.config)
@@ -408,10 +474,11 @@ def main():
         on_config_change=on_config_change,
         get_status_fn=state.get_status,
         save_config_fn=lambda: save_config(config_path, config),
+        toggle_perf_dashboard_fn=_toggle_perf_dashboard,
     )
     panel.show()
 
-    # --- Shutdown handler ---
+    # --- Shutdown ---
     def _cleanup():
         logger.info("Shutting down...")
         state.stop_event.set()
@@ -421,11 +488,13 @@ def main():
     app.aboutToQuit.connect(_cleanup)
 
     hk = config.get("hotkeys", {})
+    tb = config.get("triggerbot", {})
     logger.info(
-        "Character Tracker running.  F6=%s detection  F7=%s lock-toggle  F4=%s lock-hold",
+        "Character Tracker running.  %s=detection  %s=lock-toggle  %s=lock-hold  %s=triggerbot",
         hk.get("detection_toggle", "F6"),
-        hk.get("lock_toggle", "F7"),
-        hk.get("lock_hold", "F4"),
+        hk.get("lock_toggle",      "F7"),
+        hk.get("lock_hold",        "F4"),
+        tb.get("hotkey",           "F5"),
     )
     sys.exit(app.exec())
 

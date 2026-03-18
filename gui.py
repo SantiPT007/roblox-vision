@@ -14,9 +14,12 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
+    QScrollArea,
     QSlider,
     QSpinBox,
     QStatusBar,
@@ -42,9 +45,6 @@ def _get_window_titles() -> list:
         return []
 
 
-# Presets are defined in config.yaml under the "presets" key.
-# The GUI reads them from there so users can add their own.
-
 class ControlPanel(QWidget):
     """Settings and control panel window."""
 
@@ -54,18 +54,18 @@ class ControlPanel(QWidget):
         on_config_change: Callable[[str, str, object], None],
         get_status_fn: Callable[[], dict],
         save_config_fn: Optional[Callable[[], None]] = None,
+        toggle_perf_dashboard_fn: Optional[Callable[[], None]] = None,
     ):
         super().__init__()
         self._config = config
         self._on_change = on_config_change
         self._get_status = get_status_fn
         self._save_config = save_config_fn
+        self._toggle_perf = toggle_perf_dashboard_fn
 
         self.setWindowTitle("Character Tracker — Control Panel")
-        self.setMinimumWidth(400)
-        self.setWindowFlags(
-            Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint
-        )
+        self.setMinimumWidth(430)
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
 
         self._build_ui()
 
@@ -79,23 +79,46 @@ class ControlPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
-        root.setSpacing(8)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        inner = QWidget()
+        root = QVBoxLayout(inner)
+        root.setSpacing(6)
 
         root.addWidget(self._build_capture_group())
         root.addWidget(self._build_detection_group())
         root.addWidget(self._build_lock_group())
+        root.addWidget(self._build_triggerbot_group())
+        root.addWidget(self._build_recoil_group())
         root.addWidget(self._build_hotkeys_group())
         root.addWidget(self._build_overlay_group())
+        root.addWidget(self._build_profiles_group())
         root.addWidget(self._build_follow_button())
 
+        btn_row = QHBoxLayout()
         if self._save_config:
             save_btn = QPushButton("Save Config to Disk")
             save_btn.clicked.connect(self._on_save)
-            root.addWidget(save_btn)
+            btn_row.addWidget(save_btn)
+        if self._toggle_perf:
+            perf_btn = QPushButton("Toggle Perf Dashboard")
+            perf_btn.clicked.connect(self._toggle_perf)
+            btn_row.addWidget(perf_btn)
+        root.addLayout(btn_row)
 
         self._status_bar = QStatusBar()
         root.addWidget(self._status_bar)
+
+        scroll.setWidget(inner)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
+
+    # ------------------------------------------------------------------
+    # Capture
+    # ------------------------------------------------------------------
 
     def _build_capture_group(self) -> QGroupBox:
         grp = QGroupBox("Capture")
@@ -112,7 +135,6 @@ class ControlPanel(QWidget):
             lambda v: self._on_change("capture", "target_window", v)
         )
         row.addWidget(self._window_combo, 1)
-
         refresh_btn = QPushButton("↺")
         refresh_btn.setFixedWidth(28)
         refresh_btn.clicked.connect(self._populate_windows)
@@ -122,18 +144,20 @@ class ControlPanel(QWidget):
         fps_spin = QSpinBox()
         fps_spin.setRange(10, 240)
         fps_spin.setValue(self._config.get("capture", {}).get("fps_cap", 60))
-        fps_spin.valueChanged.connect(
-            lambda v: self._on_change("capture", "fps_cap", v)
-        )
+        fps_spin.valueChanged.connect(lambda v: self._on_change("capture", "fps_cap", v))
         form.addRow("FPS cap:", fps_spin)
 
         return grp
+
+    # ------------------------------------------------------------------
+    # Detection
+    # ------------------------------------------------------------------
 
     def _build_detection_group(self) -> QGroupBox:
         grp = QGroupBox("Detection")
         form = QFormLayout(grp)
 
-        # ----- Model selector -----
+        # Model selector
         model_row = QHBoxLayout()
         self._model_combo = QComboBox()
         self._model_combo.setEditable(False)
@@ -149,10 +173,11 @@ class ControlPanel(QWidget):
         model_row.addWidget(model_refresh_btn)
         form.addRow("Model:", model_row)
 
+        # Confidence
         self._conf_label = QLabel()
         conf_val = self._config.get("detection", {}).get("confidence", 0.45)
         conf_slider = QSlider(Qt.Orientation.Horizontal)
-        conf_slider.setRange(10, 90)
+        conf_slider.setRange(5, 90)
         conf_slider.setValue(int(conf_val * 100))
         self._conf_label.setText(f"{conf_val:.2f}")
         conf_slider.valueChanged.connect(self._on_conf_change)
@@ -161,26 +186,27 @@ class ControlPanel(QWidget):
         conf_row.addWidget(self._conf_label)
         form.addRow("Confidence:", conf_row)
 
+        # Device
         device_combo = QComboBox()
         device_combo.addItems(["cuda", "cpu"])
-        device_combo.setCurrentText(
-            self._config.get("detection", {}).get("device", "cuda")
-        )
+        device_combo.setCurrentText(self._config.get("detection", {}).get("device", "cuda"))
         device_combo.currentTextChanged.connect(
             lambda v: self._on_change("detection", "device", v)
         )
         form.addRow("Device:", device_combo)
 
+        # BG subtraction
         bg_chk = QCheckBox()
         bg_chk.setChecked(
-            self._config.get("detection", {}).get("use_background_subtraction", True)
+            self._config.get("detection", {}).get("use_background_subtraction", False)
         )
         bg_chk.toggled.connect(
             lambda v: self._on_change("detection", "use_background_subtraction", v)
         )
         form.addRow("BG subtraction:", bg_chk)
 
-        all_cls_chk = QCheckBox("All classes  (enable for custom models — disables COCO class-0 filter)")
+        # All classes
+        all_cls_chk = QCheckBox("All classes  (enable for custom models)")
         all_cls_chk.setChecked(
             self._config.get("detection", {}).get("detect_all_classes", False)
         )
@@ -189,30 +215,78 @@ class ControlPanel(QWidget):
         )
         form.addRow("", all_cls_chk)
 
+        # Team detection — experimental
+        team_chk = QCheckBox(
+            "Team color detection  (experimental — may misread in some scenes)"
+        )
+        team_chk.setChecked(self._config.get("detection", {}).get("team_detection", False))
+        team_chk.toggled.connect(
+            lambda v: self._on_change("detection", "team_detection", v)
+        )
+        form.addRow("", team_chk)
+
+        # Auto-confidence
+        auto_chk = QCheckBox(
+            "Auto-confidence  — keeps detection count near your target automatically"
+        )
+        auto_chk.setChecked(self._config.get("detection", {}).get("auto_confidence", False))
+        auto_chk.toggled.connect(
+            lambda v: self._on_change("detection", "auto_confidence", v)
+        )
+        form.addRow("", auto_chk)
+
+        det = self._config.get("detection", {})
+
+        # Target count (the one number you actually care about)
+        target_spin = QSpinBox()
+        target_spin.setRange(1, 20)
+        target_spin.setValue(det.get("auto_conf_target", 3))
+        target_spin.setToolTip(
+            "How many characters you want detected per frame.\n"
+            "If you're getting too many detections → raise this.\n"
+            "If you're missing real characters → lower this."
+        )
+        target_spin.valueChanged.connect(
+            lambda v: self._on_change("detection", "auto_conf_target", v)
+        )
+        form.addRow("  Target detections:", target_spin)
+
+        # Min/max confidence bounds
+        bounds_note = QLabel(
+            f"  Allowed range: {int(det.get('auto_conf_min', 0.08)*100)}% – "
+            f"{int(det.get('auto_conf_max', 0.60)*100)}%  "
+            f"(edit in config.yaml to change bounds)"
+        )
+        bounds_note.setStyleSheet("color: gray; font-size: 10px;")
+        form.addRow("", bounds_note)
+
         return grp
+
+    # ------------------------------------------------------------------
+    # Mouse Lock
+    # ------------------------------------------------------------------
 
     def _build_lock_group(self) -> QGroupBox:
         grp = QGroupBox("Mouse Lock")
         form = QFormLayout(grp)
         cf = self._config.get("cursor_follow", {})
 
-        # ----- FPS mode -----
-        fps_chk = QCheckBox("FPS mode  (camera-controlled games — low-gain movement, no prediction, deadzone)")
+        fps_chk = QCheckBox("FPS mode  (camera-controlled — low-gain, no prediction, deadzone)")
         fps_chk.setChecked(cf.get("fps_mode", False))
         fps_chk.toggled.connect(lambda v: self._on_change("cursor_follow", "fps_mode", v))
         form.addRow("", fps_chk)
 
-        # ----- Presets -----
+        # Aimlock presets
         presets = self._config.get("presets", {})
         if presets:
             preset_combo = QComboBox()
-            preset_combo.addItem("— select preset —")
+            preset_combo.addItem("— aimlock preset —")
             for name in presets:
                 preset_combo.addItem(name)
             preset_combo.currentTextChanged.connect(self._on_preset_selected)
-            form.addRow("Preset:", preset_combo)
+            form.addRow("Aimlock preset:", preset_combo)
 
-        # ----- Smoothing -----
+        # Smoothing
         self._smooth_label = QLabel()
         smooth_val = cf.get("smoothing", 0.12)
         self._smooth_slider = QSlider(Qt.Orientation.Horizontal)
@@ -225,11 +299,25 @@ class ControlPanel(QWidget):
         smooth_row.addWidget(self._smooth_label)
         form.addRow("Smoothing:", smooth_row)
 
-        # ----- Speed -----
+        # Curve
+        self._curve_combo = QComboBox()
+        self._curve_combo.addItems(["linear", "exponential", "bezier"])
+        self._curve_combo.setCurrentText(cf.get("smoothing_curve", "linear"))
+        self._curve_combo.setToolTip(
+            "linear — constant rate\n"
+            "exponential — slower near target, faster far away\n"
+            "bezier — S-curve: gentle at extremes, fastest at mid-distance"
+        )
+        self._curve_combo.currentTextChanged.connect(
+            lambda v: self._on_change("cursor_follow", "smoothing_curve", v)
+        )
+        form.addRow("Curve:", self._curve_combo)
+
+        # Speed
         self._speed_label = QLabel()
         speed_val = cf.get("speed", 1.0)
         self._speed_slider = QSlider(Qt.Orientation.Horizontal)
-        self._speed_slider.setRange(10, 400)   # 0.1x – 4.0x, step 0.01
+        self._speed_slider.setRange(10, 400)
         self._speed_slider.setValue(int(speed_val * 100))
         self._speed_label.setText(f"{speed_val:.2f}x")
         self._speed_slider.valueChanged.connect(self._on_speed_change)
@@ -238,7 +326,7 @@ class ControlPanel(QWidget):
         speed_row.addWidget(self._speed_label)
         form.addRow("Speed:", speed_row)
 
-        # ----- FOV radius -----
+        # FOV radius
         self._radius_label = QLabel()
         radius_val = cf.get("follow_radius", 150)
         self._radius_slider = QSlider(Qt.Orientation.Horizontal)
@@ -251,7 +339,7 @@ class ControlPanel(QWidget):
         radius_row.addWidget(self._radius_label)
         form.addRow("FOV radius:", radius_row)
 
-        # ----- Follow point -----
+        # Follow point
         self._fp_combo = QComboBox()
         self._fp_combo.addItems(["head", "chest", "center"])
         self._fp_combo.setCurrentText(cf.get("follow_point", "chest"))
@@ -260,7 +348,7 @@ class ControlPanel(QWidget):
         )
         form.addRow("Aim point:", self._fp_combo)
 
-        # ----- Prediction -----
+        # Prediction
         self._pred_spin = QSpinBox()
         self._pred_spin.setRange(0, 200)
         self._pred_spin.setSuffix(" ms")
@@ -270,7 +358,7 @@ class ControlPanel(QWidget):
         )
         form.addRow("Prediction:", self._pred_spin)
 
-        # ----- Deadzone (FPS mode) -----
+        # Deadzone
         self._dz_spin = QSpinBox()
         self._dz_spin.setRange(0, 50)
         self._dz_spin.setSuffix(" px")
@@ -280,22 +368,162 @@ class ControlPanel(QWidget):
         )
         form.addRow("Deadzone (FPS):", self._dz_spin)
 
-        # ----- Enemy-only filter -----
-        # target_class=None locks any class; =1 locks "roblox avatar" only in rivals.pt
-        enemy_chk = QCheckBox(
-            "Enemies only  (class 1 — for rivals.pt: ignores 'friendly' teammates)"
-        )
-        current_tc = cf.get("target_class")
-        enemy_chk.setChecked(current_tc == 1)
+        # Enemies only
+        enemy_chk = QCheckBox("Enemies only  (class 1 — rivals.pt)")
+        enemy_chk.setChecked(cf.get("target_class") == 1)
         enemy_chk.toggled.connect(
             lambda v: self._on_change("cursor_follow", "target_class", 1 if v else None)
         )
         form.addRow("", enemy_chk)
 
+        # Depth preference
+        depth_chk = QCheckBox("Prefer closest target  (largest bounding box = nearest)")
+        depth_chk.setChecked(cf.get("prefer_closest_depth", False))
+        depth_chk.toggled.connect(
+            lambda v: self._on_change("cursor_follow", "prefer_closest_depth", v)
+        )
+        form.addRow("", depth_chk)
+
+        # Snap-back
+        sb_thresh_spin = QSpinBox()
+        sb_thresh_spin.setRange(5, 200)
+        sb_thresh_spin.setSuffix(" px")
+        sb_thresh_spin.setValue(cf.get("snapback_threshold", 15))
+        sb_thresh_spin.setToolTip(
+            "If the cursor moves this many pixels unexpectedly (user grabbed mouse),\n"
+            "the lock pauses briefly. Set very high (200) to disable snap-back detection."
+        )
+        sb_thresh_spin.valueChanged.connect(
+            lambda v: self._on_change("cursor_follow", "snapback_threshold", v)
+        )
+        form.addRow("Snap-back threshold:", sb_thresh_spin)
+
+        sb_pause_spin = QSpinBox()
+        sb_pause_spin.setRange(0, 2000)
+        sb_pause_spin.setSuffix(" ms")
+        sb_pause_spin.setValue(cf.get("snapback_pause_ms", 200))
+        sb_pause_spin.setToolTip("How long the lock pauses after snap-back is detected")
+        sb_pause_spin.valueChanged.connect(
+            lambda v: self._on_change("cursor_follow", "snapback_pause_ms", v)
+        )
+        form.addRow("Snap-back pause:", sb_pause_spin)
+
         return grp
 
+    # ------------------------------------------------------------------
+    # Triggerbot
+    # ------------------------------------------------------------------
+
+    def _build_triggerbot_group(self) -> QGroupBox:
+        grp = QGroupBox("Triggerbot")
+        form = QFormLayout(grp)
+        tb = self._config.get("triggerbot", {})
+
+        enabled_chk = QCheckBox("Enable triggerbot")
+        enabled_chk.setChecked(tb.get("enabled", False))
+        enabled_chk.toggled.connect(lambda v: self._on_change("triggerbot", "enabled", v))
+        form.addRow("", enabled_chk)
+
+        hotkey_edit = QLineEdit(tb.get("hotkey", "F5"))
+        hotkey_edit.setMaximumWidth(70)
+        hotkey_edit.setToolTip("Hotkey to toggle triggerbot on/off at runtime")
+        hotkey_edit.textChanged.connect(lambda v: self._on_change("triggerbot", "hotkey", v))
+        form.addRow("Toggle hotkey:", hotkey_edit)
+
+        delay_min_spin = QSpinBox()
+        delay_min_spin.setRange(0, 500)
+        delay_min_spin.setSuffix(" ms")
+        delay_min_spin.setValue(tb.get("delay_min_ms", 50))
+        delay_min_spin.setToolTip("Minimum random delay before the click fires")
+        delay_min_spin.valueChanged.connect(
+            lambda v: self._on_change("triggerbot", "delay_min_ms", v)
+        )
+        form.addRow("Min delay:", delay_min_spin)
+
+        delay_max_spin = QSpinBox()
+        delay_max_spin.setRange(0, 1000)
+        delay_max_spin.setSuffix(" ms")
+        delay_max_spin.setValue(tb.get("delay_max_ms", 120))
+        delay_max_spin.valueChanged.connect(
+            lambda v: self._on_change("triggerbot", "delay_max_ms", v)
+        )
+        form.addRow("Max delay:", delay_max_spin)
+
+        padding_spin = QSpinBox()
+        padding_spin.setRange(0, 50)
+        padding_spin.setSuffix(" px")
+        padding_spin.setValue(tb.get("padding", 5))
+        padding_spin.setToolTip("Extra pixels outside the bbox edge that still count as 'inside'")
+        padding_spin.valueChanged.connect(
+            lambda v: self._on_change("triggerbot", "padding", v)
+        )
+        form.addRow("Bbox padding:", padding_spin)
+
+        return grp
+
+    # ------------------------------------------------------------------
+    # Recoil
+    # ------------------------------------------------------------------
+
+    def _build_recoil_group(self) -> QGroupBox:
+        grp = QGroupBox("Recoil Compensation")
+        form = QFormLayout(grp)
+        rc = self._config.get("recoil", {})
+
+        enabled_chk = QCheckBox("Enable recoil compensation")
+        enabled_chk.setChecked(rc.get("enabled", False))
+        enabled_chk.toggled.connect(lambda v: self._on_change("recoil", "enabled", v))
+        form.addRow("", enabled_chk)
+
+        # Recoil pattern preset
+        rc_presets = self._config.get("recoil_presets", {})
+        if rc_presets:
+            rp_combo = QComboBox()
+            rp_combo.addItem("— pattern preset —")
+            for name in rc_presets:
+                rp_combo.addItem(name)
+            rp_combo.currentTextChanged.connect(self._on_recoil_preset_selected)
+            form.addRow("Pattern preset:", rp_combo)
+
+        fire_key_edit = QLineEdit(rc.get("fire_key", "left"))
+        fire_key_edit.setMaximumWidth(80)
+        fire_key_edit.setToolTip('"left" = LMB  |  "right" = RMB  |  keyboard key e.g. "z"')
+        fire_key_edit.textChanged.connect(lambda v: self._on_change("recoil", "fire_key", v))
+        form.addRow("Fire key:", fire_key_edit)
+
+        self._recoil_step_spin = QSpinBox()
+        self._recoil_step_spin.setRange(10, 500)
+        self._recoil_step_spin.setSuffix(" ms")
+        self._recoil_step_spin.setValue(rc.get("step_ms", 80))
+        self._recoil_step_spin.setToolTip(
+            "Time between pattern steps — lower = faster-firing weapon.\n"
+            "Match this to your weapon's fire rate for best results."
+        )
+        self._recoil_step_spin.valueChanged.connect(
+            lambda v: self._on_change("recoil", "step_ms", v)
+        )
+        form.addRow("Step interval:", self._recoil_step_spin)
+
+        reset_spin = QSpinBox()
+        reset_spin.setRange(100, 3000)
+        reset_spin.setSuffix(" ms")
+        reset_spin.setValue(rc.get("reset_ms", 600))
+        reset_spin.setToolTip("How long after you stop firing before the pattern resets to step 1")
+        reset_spin.valueChanged.connect(lambda v: self._on_change("recoil", "reset_ms", v))
+        form.addRow("Reset after:", reset_spin)
+
+        note = QLabel("Recoil pattern (dx/dy values) is edited in config.yaml")
+        note.setStyleSheet("color: gray; font-size: 10px;")
+        form.addRow("", note)
+
+        return grp
+
+    # ------------------------------------------------------------------
+    # Hotkeys
+    # ------------------------------------------------------------------
+
     def _build_hotkeys_group(self) -> QGroupBox:
-        grp = QGroupBox("Hotkeys  (lock_toggle and lock_hold are live; detection_toggle needs restart)")
+        grp = QGroupBox("Hotkeys")
         form = QFormLayout(grp)
         hk = self._config.get("hotkeys", {})
 
@@ -307,12 +535,19 @@ class ControlPanel(QWidget):
         for key, label, default in fields:
             edit = QLineEdit(hk.get(key, default))
             edit.setMaximumWidth(70)
-            edit.textChanged.connect(
-                lambda v, k=key: self._on_change("hotkeys", k, v)
-            )
+            edit.textChanged.connect(lambda v, k=key: self._on_change("hotkeys", k, v))
             form.addRow(label, edit)
 
+        tb_key = self._config.get("triggerbot", {}).get("hotkey", "F5")
+        note = QLabel(f"Triggerbot toggle: {tb_key}  (change in Triggerbot section)")
+        note.setStyleSheet("color: gray; font-size: 10px;")
+        form.addRow("", note)
+
         return grp
+
+    # ------------------------------------------------------------------
+    # Overlay
+    # ------------------------------------------------------------------
 
     def _build_overlay_group(self) -> QGroupBox:
         grp = QGroupBox("Overlay")
@@ -320,21 +555,54 @@ class ControlPanel(QWidget):
         ov = self._config.get("overlay", {})
 
         checkboxes = [
-            ("show_boxes",         "Show bounding boxes"),
-            ("show_trails",        "Show trails"),
-            ("show_velocity",      "Show velocity arrows"),
-            ("show_radius_circle", "Show FOV circle"),
-            ("show_minimap",       "Show mini-map"),
+            ("show_boxes",          "Show bounding boxes"),
+            ("show_trails",         "Show movement trails"),
+            ("show_velocity",       "Show velocity arrows"),
+            ("show_radius_circle",  "Show FOV circle"),
+            ("show_minimap",        "Show mini-map"),
+            ("show_direction_cone", "Show camera direction arrow on mini-map"),
         ]
         for key, label in checkboxes:
             chk = QCheckBox(label)
             chk.setChecked(ov.get(key, True))
-            chk.toggled.connect(
-                lambda v, k=key: self._on_change("overlay", k, v)
-            )
+            chk.toggled.connect(lambda v, k=key: self._on_change("overlay", k, v))
             layout.addWidget(chk)
 
         return grp
+
+    # ------------------------------------------------------------------
+    # Profiles
+    # ------------------------------------------------------------------
+
+    def _build_profiles_group(self) -> QGroupBox:
+        grp = QGroupBox("Saved Profiles  (save/load full config snapshots)")
+        form = QFormLayout(grp)
+
+        self._profile_combo = QComboBox()
+        self._populate_profiles()
+        form.addRow("Profile:", self._profile_combo)
+
+        btn_row = QHBoxLayout()
+        load_btn = QPushButton("Load")
+        load_btn.clicked.connect(self._on_profile_load)
+        btn_row.addWidget(load_btn)
+        save_btn = QPushButton("Save As…")
+        save_btn.clicked.connect(self._on_profile_save)
+        btn_row.addWidget(save_btn)
+        del_btn = QPushButton("Delete")
+        del_btn.clicked.connect(self._on_profile_delete)
+        btn_row.addWidget(del_btn)
+        ref_btn = QPushButton("↺")
+        ref_btn.setFixedWidth(28)
+        ref_btn.clicked.connect(self._populate_profiles)
+        btn_row.addWidget(ref_btn)
+        form.addRow("", btn_row)
+
+        return grp
+
+    # ------------------------------------------------------------------
+    # Lock toggle button
+    # ------------------------------------------------------------------
 
     def _build_follow_button(self) -> QPushButton:
         toggle_key = self._config.get("hotkeys", {}).get("lock_toggle", "F7")
@@ -349,7 +617,65 @@ class ControlPanel(QWidget):
         return self._follow_btn
 
     # ------------------------------------------------------------------
-    # Preset application
+    # Config preset callbacks
+    # ------------------------------------------------------------------
+
+    def _on_recoil_preset_selected(self, name: str) -> None:
+        if name.startswith("—"):
+            return
+        presets = self._config.get("recoil_presets", {})
+        preset = presets.get(name)
+        if not preset:
+            return
+        for key, value in preset.items():
+            self._on_change("recoil", key, value)
+        if "step_ms" in preset:
+            self._recoil_step_spin.blockSignals(True)
+            self._recoil_step_spin.setValue(preset["step_ms"])
+            self._recoil_step_spin.blockSignals(False)
+        self._status_bar.showMessage(f"Recoil preset '{name}' applied.", 3000)
+
+    def _sync_key_widgets(self) -> None:
+        """Update the main slider/combo widgets to reflect current config values."""
+        cf = self._config.get("cursor_follow", {})
+        rc = self._config.get("recoil", {})
+
+        sv = cf.get("smoothing", 0.12)
+        self._smooth_slider.blockSignals(True)
+        self._smooth_slider.setValue(int(sv * 100))
+        self._smooth_label.setText(f"{sv:.2f}")
+        self._smooth_slider.blockSignals(False)
+
+        spv = cf.get("speed", 1.0)
+        self._speed_slider.blockSignals(True)
+        self._speed_slider.setValue(int(spv * 100))
+        self._speed_label.setText(f"{spv:.2f}x")
+        self._speed_slider.blockSignals(False)
+
+        rv = cf.get("follow_radius", 150)
+        self._radius_slider.blockSignals(True)
+        self._radius_slider.setValue(rv)
+        self._radius_label.setText(f"{rv}px")
+        self._radius_slider.blockSignals(False)
+
+        self._fp_combo.blockSignals(True)
+        self._fp_combo.setCurrentText(cf.get("follow_point", "chest"))
+        self._fp_combo.blockSignals(False)
+
+        self._pred_spin.blockSignals(True)
+        self._pred_spin.setValue(cf.get("prediction_ms", 60))
+        self._pred_spin.blockSignals(False)
+
+        self._curve_combo.blockSignals(True)
+        self._curve_combo.setCurrentText(cf.get("smoothing_curve", "linear"))
+        self._curve_combo.blockSignals(False)
+
+        self._recoil_step_spin.blockSignals(True)
+        self._recoil_step_spin.setValue(rc.get("step_ms", 80))
+        self._recoil_step_spin.blockSignals(False)
+
+    # ------------------------------------------------------------------
+    # Aimlock preset
     # ------------------------------------------------------------------
 
     def _on_preset_selected(self, name: str) -> None:
@@ -361,14 +687,13 @@ class ControlPanel(QWidget):
             return
 
         mapping = {
-            "smoothing":    (self._smooth_slider, self._smooth_label,
-                             lambda v: int(v * 100), lambda v: f"{v:.2f}"),
-            "speed":        (self._speed_slider,  self._speed_label,
-                             lambda v: int(v * 100), lambda v: f"{v:.2f}x"),
-            "follow_radius":(self._radius_slider, self._radius_label,
-                             lambda v: int(v),       lambda v: f"{v}px"),
+            "smoothing":     (self._smooth_slider, self._smooth_label,
+                              lambda v: int(v * 100), lambda v: f"{v:.2f}"),
+            "speed":         (self._speed_slider,  self._speed_label,
+                              lambda v: int(v * 100), lambda v: f"{v:.2f}x"),
+            "follow_radius": (self._radius_slider, self._radius_label,
+                              lambda v: int(v),       lambda v: f"{v}px"),
         }
-
         for key, value in preset.items():
             self._on_change("cursor_follow", key, value)
             if key in mapping:
@@ -389,9 +714,62 @@ class ControlPanel(QWidget):
                 self._dz_spin.blockSignals(True)
                 self._dz_spin.setValue(value)
                 self._dz_spin.blockSignals(False)
+            elif key == "smoothing_curve":
+                self._curve_combo.blockSignals(True)
+                self._curve_combo.setCurrentText(value)
+                self._curve_combo.blockSignals(False)
 
     # ------------------------------------------------------------------
-    # Slider / spinner callbacks
+    # Profile callbacks
+    # ------------------------------------------------------------------
+
+    def _on_profile_load(self) -> None:
+        name = self._profile_combo.currentText()
+        if not name:
+            return
+        try:
+            from profiles import load_profile
+            data = load_profile(name)
+            for section, vals in data.items():
+                if isinstance(vals, dict):
+                    for key, value in vals.items():
+                        self._on_change(section, key, value)
+            self._sync_key_widgets()
+            self._status_bar.showMessage(f"Profile '{name}' loaded.", 3000)
+        except Exception as exc:
+            self._status_bar.showMessage(f"Load failed: {exc}", 4000)
+
+    def _on_profile_save(self) -> None:
+        name, ok = QInputDialog.getText(self, "Save Profile", "Profile name:")
+        if not ok or not name.strip():
+            return
+        try:
+            from profiles import save_profile
+            save_profile(name.strip(), self._config)
+            self._populate_profiles()
+            self._status_bar.showMessage(f"Profile '{name.strip()}' saved.", 3000)
+        except Exception as exc:
+            self._status_bar.showMessage(f"Save failed: {exc}", 4000)
+
+    def _on_profile_delete(self) -> None:
+        name = self._profile_combo.currentText()
+        if not name:
+            return
+        reply = QMessageBox.question(
+            self, "Delete Profile", f"Delete profile '{name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                from profiles import delete_profile
+                delete_profile(name)
+                self._populate_profiles()
+                self._status_bar.showMessage(f"Profile '{name}' deleted.", 3000)
+            except Exception as exc:
+                self._status_bar.showMessage(f"Delete failed: {exc}", 4000)
+
+    # ------------------------------------------------------------------
+    # Slider callbacks
     # ------------------------------------------------------------------
 
     def _on_conf_change(self, value: int) -> None:
@@ -432,17 +810,25 @@ class ControlPanel(QWidget):
     def _on_model_changed(self, filename: str) -> None:
         if not filename:
             return
-        full_path = os.path.join("models", filename)
-        self._on_change("detection", "model", full_path)
+        self._on_change("detection", "model", os.path.join("models", filename))
 
     def _populate_windows(self) -> None:
         current = self._window_combo.currentText()
         self._window_combo.blockSignals(True)
         self._window_combo.clear()
-        titles = _get_window_titles()
-        self._window_combo.addItems(titles)
+        self._window_combo.addItems(_get_window_titles())
         self._window_combo.setCurrentText(current)
         self._window_combo.blockSignals(False)
+
+    def _populate_profiles(self) -> None:
+        self._profile_combo.blockSignals(True)
+        self._profile_combo.clear()
+        try:
+            from profiles import list_profiles
+            self._profile_combo.addItems(list_profiles())
+        except Exception:
+            pass
+        self._profile_combo.blockSignals(False)
 
     def _on_save(self) -> None:
         if self._save_config:
@@ -455,17 +841,18 @@ class ControlPanel(QWidget):
     def _refresh_status(self) -> None:
         try:
             s = self._get_status()
-            det   = "DET:ON"  if s.get("detection_active", True)  else "DET:OFF"
-            lck   = "LOCK:ON" if s.get("follow_active", False)     else "LOCK:OFF"
+            det  = "DET:ON"  if s.get("detection_active", True)  else "DET:OFF"
+            lck  = "LOCK:ON" if s.get("follow_active", False)     else "LOCK:OFF"
             model = os.path.basename(self._config.get("detection", {}).get("model", ""))
-            tid   = s.get("target_id")
+            tid  = s.get("target_id")
+            conf = self._config.get("detection", {}).get("confidence", 0)
             msg = (
                 f"{det}  {lck}  "
                 f"Cap {s.get('fps_capture', 0):.0f}fps  "
                 f"Inf {s.get('fps_inference', 0):.0f}fps  "
                 f"Tracks:{s.get('track_count', 0)}  "
                 f"Target:{'#'+str(tid) if tid is not None else '-'}  "
-                f"[{model}]"
+                f"Conf:{conf:.2f}  [{model}]"
             )
             self._status_bar.showMessage(msg)
             self._follow_btn.blockSignals(True)

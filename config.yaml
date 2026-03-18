@@ -7,9 +7,16 @@ detection:
   model: "models/yolov8n-default.pt"
   confidence: 0.15
   nms_iou: 0.45
-  use_background_subtraction: false  # keep off for moving-camera games; enable only for fixed-camera scenes
+  use_background_subtraction: false  # keep off for moving-camera games
   device: "cuda"                # "cuda" or "cpu"
-  detect_all_classes: false     # false = COCO class 0 (person) only; true = all classes (for custom models)
+  detect_all_classes: false     # false = COCO class 0 only; true = all (for custom models)
+  # Auto-confidence: automatically raises/lowers the threshold so the number of detected
+  # characters per frame stays near your target. Useful when scene density changes a lot.
+  auto_confidence: false
+  auto_conf_min: 0.08           # floor — confidence will never drop below this value
+  auto_conf_max: 0.60           # ceiling — confidence will never exceed this value
+  auto_conf_target: 3           # how many characters you want detected per frame on average
+  team_detection: false         # (experimental) detect team color from nametag pixels
 
 tracking:
   max_age: 30
@@ -22,68 +29,44 @@ hotkeys:
 
 cursor_follow:
   enabled: false
-  fps_mode: false               # true = camera-controlled games; uses low-gain movement + deadzone, no prediction
-  smoothing: 0.12               # 0.0 = instant snap, 1.0 = no movement  (unused in FPS mode)
-  speed: 1.0                    # movement speed multiplier
-  follow_radius: 150            # FOV circle radius in pixels
-  follow_point: "chest"         # "head", "chest", or "center"
-  prediction_ms: 60             # ms to extrapolate target position forward (unused in FPS mode)
+  fps_mode: false               # true = camera-controlled games (low-gain, no prediction, deadzone)
+  smoothing: 0.12               # 0.0 = instant snap, 1.0 = no movement
+  smoothing_curve: "linear"     # "linear" | "exponential" (ease-in) | "bezier" (S-curve)
+  speed: 1.0
+  follow_radius: 150            # pixels around cursor that activate locking
+  follow_point: "chest"         # "head" | "chest" | "center"
+  prediction_ms: 60             # ms to extrapolate target position forward
   deadzone: 5                   # pixels — no correction within this radius (FPS mode only)
-  target_class: null            # null = any class; 1 = enemies only with rivals.pt (class 1 = "roblox avatar")
+  target_class: null            # null = any class; 1 = enemies only (rivals.pt)
+  prefer_closest_depth: false   # true = prefer target with the largest bbox (closest in 3D)
+  snapback_threshold: 15        # pixels of unexpected cursor movement that triggers a pause
+  snapback_pause_ms: 200        # ms to pause the lock after a snap-back is detected
 
-# Presets — applied all at once from the GUI preset dropdown.
-# You can add your own presets here.
-presets:
-  # --- Normal mode (cursor visible, moves on screen) ---
-  Flick:
-    fps_mode: false
-    smoothing: 0.05
-    speed: 2.0
-    follow_radius: 120
-    follow_point: "head"
-    prediction_ms: 80
-    deadzone: 0
-  Precise:
-    fps_mode: false
-    smoothing: 0.12
-    speed: 1.4
-    follow_radius: 150
-    follow_point: "chest"
-    prediction_ms: 60
-    deadzone: 0
-  Smooth:
-    fps_mode: false
-    smoothing: 0.30
-    speed: 1.0
-    follow_radius: 220
-    follow_point: "chest"
-    prediction_ms: 40
-    deadzone: 0
-  # --- FPS mode (mouse controls camera, no visible cursor) ---
-  FPS Flick:
-    fps_mode: true
-    smoothing: 0.55
-    speed: 1.2
-    follow_radius: 200
-    follow_point: "head"
-    prediction_ms: 60
-    deadzone: 4
-  FPS Smooth:
-    fps_mode: true
-    smoothing: 0.75
-    speed: 0.9
-    follow_radius: 250
-    follow_point: "chest"
-    prediction_ms: 40
-    deadzone: 6
-  FPS Gentle:
-    fps_mode: true
-    smoothing: 0.88
-    speed: 0.7
-    follow_radius: 300
-    follow_point: "chest"
-    prediction_ms: 20
-    deadzone: 8
+# Recoil compensation — moves the mouse DOWN each step to counter upward gun recoil.
+# Pattern values: [dx, dy] — positive dy = push mouse DOWN (counter-acts upward recoil).
+# step_ms should roughly match your weapon's fire interval.
+recoil:
+  enabled: false
+  fire_key: "left"              # "left" = LMB  |  "right" = RMB  |  keyboard key e.g. "z"
+  step_ms: 80                   # ms between steps — lower = faster fire rate weapon
+  reset_ms: 600                 # ms of no-fire before the pattern index resets to step 0
+  pattern:
+    - [0, 5]
+    - [0, 5]
+    - [1, 4]
+    - [0, 4]
+    - [1, 3]
+    - [0, 3]
+    - [-1, 3]
+    - [0, 2]
+
+# Triggerbot — auto-clicks when your cursor is inside a detected character's bounding box.
+triggerbot:
+  enabled: false
+  hotkey: "F5"                  # toggle triggerbot on/off
+  delay_min_ms: 50              # random click delay — minimum (ms)
+  delay_max_ms: 120             # random click delay — maximum (ms)
+  padding: 5                    # extra pixels around the bbox edge that count as "inside"
 
 overlay:
   enabled: true
@@ -92,8 +75,140 @@ overlay:
   show_velocity: true
   show_radius_circle: true
   show_minimap: true
+  show_direction_cone: true
   trail_length: 20
   active_color: [0, 255, 80]
   inactive_color: [0, 200, 255]
   box_thickness: 1
   font_scale: 0.5
+
+perf_dashboard:
+  enabled: false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RECOIL PRESETS
+# Each preset sets a recoil pattern + step_ms. Apply from the GUI Recoil section.
+# ─────────────────────────────────────────────────────────────────────────────
+recoil_presets:
+  Light:
+    step_ms: 110
+    pattern:
+      - [0, 2]
+      - [0, 2]
+      - [0, 1]
+      - [0, 1]
+
+  Medium:
+    step_ms: 85
+    pattern:
+      - [0, 4]
+      - [0, 4]
+      - [1, 3]
+      - [0, 3]
+      - [-1, 3]
+      - [0, 2]
+
+  Heavy Spray:
+    step_ms: 75
+    pattern:
+      - [0, 7]
+      - [0, 6]
+      - [1, 5]
+      - [0, 5]
+      - [1, 4]
+      - [0, 4]
+      - [-1, 4]
+      - [0, 3]
+      - [0, 3]
+      - [-1, 2]
+
+  AR Pattern:
+    step_ms: 80
+    pattern:
+      - [0, 5]
+      - [0, 5]
+      - [1, 4]
+      - [0, 4]
+      - [1, 3]
+      - [0, 3]
+      - [-1, 3]
+      - [0, 2]
+
+  SMG Burst:
+    step_ms: 48
+    pattern:
+      - [0, 3]
+      - [0, 3]
+      - [0, 3]
+      - [0, 2]
+      - [0, 2]
+      - [0, 2]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AIMLOCK PRESETS (cursor_follow only — apply from Mouse Lock section in GUI)
+# ─────────────────────────────────────────────────────────────────────────────
+presets:
+  # --- Normal mode ---
+  Flick:
+    fps_mode: false
+    smoothing: 0.05
+    smoothing_curve: "linear"
+    speed: 2.0
+    follow_radius: 120
+    follow_point: "head"
+    prediction_ms: 80
+    deadzone: 0
+
+  Precise:
+    fps_mode: false
+    smoothing: 0.12
+    smoothing_curve: "exponential"
+    speed: 1.4
+    follow_radius: 150
+    follow_point: "chest"
+    prediction_ms: 60
+    deadzone: 0
+
+  Smooth:
+    fps_mode: false
+    smoothing: 0.30
+    smoothing_curve: "bezier"
+    speed: 1.0
+    follow_radius: 220
+    follow_point: "chest"
+    prediction_ms: 40
+    deadzone: 0
+
+  # --- FPS mode ---
+  FPS Flick:
+    fps_mode: true
+    smoothing: 0.55
+    smoothing_curve: "linear"
+    speed: 1.2
+    follow_radius: 200
+    follow_point: "head"
+    prediction_ms: 60
+    deadzone: 4
+
+  FPS Smooth:
+    fps_mode: true
+    smoothing: 0.75
+    smoothing_curve: "linear"
+    speed: 0.9
+    follow_radius: 250
+    follow_point: "chest"
+    prediction_ms: 40
+    deadzone: 6
+
+  FPS Gentle:
+    fps_mode: true
+    smoothing: 0.88
+    smoothing_curve: "linear"
+    speed: 0.7
+    follow_radius: 300
+    follow_point: "chest"
+    prediction_ms: 20
+    deadzone: 8
+
+# Full config presets are stored as profile files in the profiles/ directory.
+# Load them from the "Saved Profiles" section in the GUI.

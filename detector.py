@@ -1,10 +1,15 @@
-"""
-detector.py — YOLOv8 inference wrapper with optional background subtraction.
-Runs inference asynchronously via a single-worker ThreadPoolExecutor.
+            """
+detector.py — YOLOv8 inference wrapper with optional background subtraction
+and automatic confidence tuning.
+
+Auto-confidence mode: tracks a rolling window of detection counts and nudges
+the confidence threshold up/down to stay near a configured target count,
+bounded by auto_conf_min / auto_conf_max.
 """
 
 import logging
 import threading
+from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import List, Optional
 
@@ -13,11 +18,15 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+_AUTO_CONF_WINDOW = 30   # frames in rolling detection-count history
+_AUTO_CONF_STEP   = 0.005  # confidence nudge per adjustment
+
 
 class Detector:
     """
     Wraps YOLOv8 for async person/humanoid detection.
     Background subtraction pre-filters static pixels to reduce false positives.
+    Auto-confidence tuning adjusts the threshold toward a target detection count.
     """
 
     def __init__(self, config: dict):
@@ -27,20 +36,25 @@ class Detector:
         self._nms_iou: float = det_cfg.get("nms_iou", 0.45)
         self._use_bg_sub: bool = det_cfg.get("use_background_subtraction", True)
         self._device: str = det_cfg.get("device", "cuda")
-
         self._detect_all_classes: bool = det_cfg.get("detect_all_classes", False)
+
+        # Auto-confidence
+        self._auto_conf: bool = det_cfg.get("auto_confidence", False)
+        self._auto_conf_min: float = det_cfg.get("auto_conf_min", 0.08)
+        self._auto_conf_max: float = det_cfg.get("auto_conf_max", 0.60)
+        self._auto_conf_target: int = det_cfg.get("auto_conf_target", 3)
+        self._conf_history: deque = deque(maxlen=_AUTO_CONF_WINDOW)
 
         self._model = None
         self._bg_subtractor = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="InferenceWorker")
         self._pending_future: Optional[Future] = None
-        self._last_detections: Optional[List[dict]] = None  # completed result waiting to be consumed
+        self._last_detections: Optional[List[dict]] = None
         self._lock = threading.Lock()
         self._inference_fps: float = 0.0
         self._fps_lock = threading.Lock()
         self._reload_requested: bool = False
 
-        # Morphological kernel for bg-sub post-processing
         self._morph_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
 
     # ------------------------------------------------------------------
@@ -52,7 +66,6 @@ class Detector:
         from ultralytics import YOLO
         import torch
 
-        # Fallback to CPU if CUDA unavailable
         device = self._device
         if device == "cuda" and not torch.cuda.is_available():
             logger.warning("CUDA requested but not available, falling back to CPU.")
@@ -70,11 +83,19 @@ class Detector:
         logger.info("Detector ready.")
 
     def set_confidence(self, value: float) -> None:
-        """Live-update confidence threshold from GUI."""
-        self._confidence = max(0.1, min(0.95, float(value)))
+        self._confidence = max(0.05, min(0.95, float(value)))
+
+    def set_auto_confidence(self, enabled: bool) -> None:
+        self._auto_conf = enabled
+        if not enabled:
+            self._conf_history.clear()
+
+    def set_auto_conf_params(self, min_val: float, max_val: float, target: int) -> None:
+        self._auto_conf_min = min_val
+        self._auto_conf_max = max_val
+        self._auto_conf_target = max(1, target)
 
     def reload_model(self, new_path: str) -> None:
-        """Hot-swap model. Actual reload happens on the next inference frame."""
         logger.info("Model swap requested: %s → %s", self._model_path, new_path)
         self._model_path = new_path
         self._reload_requested = True
@@ -82,12 +103,15 @@ class Detector:
     def set_detect_all_classes(self, value: bool) -> None:
         self._detect_all_classes = value
 
+    @property
+    def current_confidence(self) -> float:
+        return self._confidence
+
     def submit_frame(self, frame: np.ndarray) -> None:
         """Submit a frame for async inference. Drops frame if previous is still running."""
         with self._lock:
             if self._pending_future is not None and not self._pending_future.done():
-                return  # Still in-flight; drop this frame
-            # Harvest result from the just-completed future before replacing it
+                return
             if self._pending_future is not None:
                 try:
                     self._last_detections = self._pending_future.result()
@@ -97,10 +121,9 @@ class Detector:
             self._pending_future = self._executor.submit(self._infer, frame.copy())
 
     def get_detections(self) -> Optional[List[dict]]:
-        """Returns the most recently completed detection result, or None if nothing new."""
         with self._lock:
             result = self._last_detections
-            self._last_detections = None  # consume
+            self._last_detections = None
         return result
 
     @property
@@ -116,20 +139,38 @@ class Detector:
     # ------------------------------------------------------------------
 
     def _apply_bg_subtraction(self, frame: np.ndarray) -> np.ndarray:
-        """Zero-out static background pixels before passing to YOLO."""
         fg_mask = self._bg_subtractor.apply(frame)
         fg_mask = cv2.dilate(fg_mask, self._morph_kernel, iterations=2)
-        # Mask out background (where fg_mask == 0)
         result = frame.copy()
         result[fg_mask == 0] = 0
         return result
+
+    def _adjust_confidence(self, detection_count: int) -> None:
+        """Nudge confidence toward the target detection count."""
+        self._conf_history.append(detection_count)
+        if len(self._conf_history) < _AUTO_CONF_WINDOW // 2:
+            return  # Not enough history yet
+
+        avg = sum(self._conf_history) / len(self._conf_history)
+        if avg > self._auto_conf_target + 1:
+            # Too many detections → raise confidence (be more selective)
+            self._confidence = min(
+                self._auto_conf_max,
+                self._confidence + _AUTO_CONF_STEP,
+            )
+        elif avg < self._auto_conf_target - 0.5:
+            # Too few detections → lower confidence (be more permissive)
+            self._confidence = max(
+                self._auto_conf_min,
+                self._confidence - _AUTO_CONF_STEP,
+            )
 
     def _infer(self, frame: np.ndarray) -> List[dict]:
         import time
 
         t0 = time.perf_counter()
 
-        # Hot-swap model if requested (runs on executor thread, safe to load here)
+        # Hot-swap model if requested
         if self._reload_requested:
             self._reload_requested = False
             try:
@@ -149,8 +190,6 @@ class Detector:
         if self._use_bg_sub and self._bg_subtractor is not None:
             infer_frame = self._apply_bg_subtraction(frame)
 
-        # classes=None detects all classes (for custom models with their own class set)
-        # classes=[0] restricts to COCO person class (for standard yolov8 weights)
         cls_filter = None if self._detect_all_classes else [0]
         results = self._model(
             infer_frame,
@@ -178,5 +217,8 @@ class Detector:
         if elapsed > 0:
             with self._fps_lock:
                 self._inference_fps = 1.0 / elapsed
+
+        if self._auto_conf:
+            self._adjust_confidence(len(detections))
 
         return detections

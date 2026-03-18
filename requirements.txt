@@ -13,3 +13,5 @@ keyboard
 pyserial
 dxcam
 interception-python
+psutil
+pynvml

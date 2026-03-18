@@ -1,35 +1,99 @@
 """
 tracker.py — ByteTrack multi-object tracker via boxmot.
-Maintains persistent IDs, velocity, speed, angle, and positional trails.
+Maintains persistent IDs, velocity, speed, angle, positional trails,
+depth score (bbox area heuristic), and team color (pixel sampling above bbox).
 """
 
 import logging
 import math
 import threading
 from collections import deque
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
+import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Hue ranges (OpenCV: 0-179) → team color name
+_HUE_BANDS = [
+    (0,   10,  "red"),
+    (10,  25,  "orange"),
+    (25,  85,  "green"),
+    (85,  130, "blue"),
+    (130, 155, "purple"),
+    (155, 179, "red"),
+]
+
+# Reference bbox area (px²) used to normalize depth_score.
+# A character this size is treated as "fully close" (score = 1.0).
+_DEPTH_REF_AREA = 40_000.0
+
+
+def _classify_hue(h: float) -> str:
+    for lo, hi, name in _HUE_BANDS:
+        if lo <= h <= hi:
+            return name
+    return "red"
+
+
+def _sample_team_color(
+    frame: np.ndarray,
+    x1: int, y1: int,
+    x2: int, y2: int,
+) -> Optional[str]:
+    """
+    Sample a strip above the character's bounding box to detect team color
+    (e.g. nametag or team indicator hue).
+    Returns a color name string or None if the region is too dark/neutral.
+    """
+    bbox_h = y2 - y1
+    strip_h = max(4, bbox_h // 8)
+    s_y1 = max(0, y1 - strip_h - 2)
+    s_y2 = max(1, y1 - 2)
+
+    # Use middle 50% of bbox width to avoid edge noise
+    margin = (x2 - x1) // 4
+    s_x1 = max(0, x1 + margin)
+    s_x2 = min(frame.shape[1] - 1, x2 - margin)
+
+    if s_y2 <= s_y1 or s_x2 <= s_x1:
+        return None
+
+    region = frame[s_y1:s_y2, s_x1:s_x2]
+    if region.size == 0:
+        return None
+
+    hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
+    avg_h = float(np.mean(hsv[:, :, 0]))
+    avg_s = float(np.mean(hsv[:, :, 1]))
+    avg_v = float(np.mean(hsv[:, :, 2]))
+
+    # Reject washed-out or too-dark regions
+    if avg_s < 50 or avg_v < 50:
+        return "neutral"
+
+    return _classify_hue(avg_h)
+
 
 class Tracker:
     """
-    Wraps boxmot ByteTrack and enriches track output with velocity, trail,
-    and age metadata.
+    Wraps boxmot ByteTrack and enriches track output with:
+      velocity, trail, age, depth_score, team_color
     """
 
     def __init__(self, config: dict):
         trk_cfg = config["tracking"]
         ovr_cfg = config.get("overlay", {})
+        det_cfg = config.get("detection", {})
 
         self._max_age: int = trk_cfg.get("max_age", 30)
         self._min_hits: int = trk_cfg.get("min_hits", 2)
         self._trail_length: int = ovr_cfg.get("trail_length", 20)
+        self._team_detection: bool = det_cfg.get("team_detection", False)
 
         self._tracker = None
-        self._history: Dict[int, dict] = {}  # keyed by track ID
+        self._history: Dict[int, dict] = {}
         self._current_tracks: List[dict] = []
         self._lock = threading.Lock()
         self._frame_count: int = 0
@@ -52,14 +116,13 @@ class Tracker:
     def update(self, detections: List[dict], frame: np.ndarray) -> List[dict]:
         """
         Run tracker update with new detections for the current frame.
-        Returns enriched track list and stores it for get_tracks().
+        Returns enriched track list.
         """
         self._frame_count += 1
 
         if self._tracker is None:
             return []
 
-        # Build detection array [[x1,y1,x2,y2,conf,cls], ...]
         if detections:
             dets = np.array([
                 [
@@ -82,19 +145,28 @@ class Tracker:
         enriched = []
 
         for row in raw_tracks:
-            # boxmot output: [x1, y1, x2, y2, track_id, conf, cls] or similar
-            # Handle both 7-column and 8-column outputs from different boxmot versions
-            if len(row) >= 7:
-                x1, y1, x2, y2 = int(row[0]), int(row[1]), int(row[2]), int(row[3])
-                track_id = int(row[4])
-                conf     = float(row[5])
-                class_id = int(row[6]) if len(row) >= 7 else 0
-            else:
+            if len(row) < 7:
                 continue
+            x1, y1, x2, y2 = int(row[0]), int(row[1]), int(row[2]), int(row[3])
+            track_id = int(row[4])
+            conf     = float(row[5])
+            class_id = int(row[6])
 
             cx = (x1 + x2) // 2
             cy = (y1 + y2) // 2
             active_ids.add(track_id)
+
+            # Depth score: bbox area relative to reference — larger = closer
+            bbox_area = max(1, (x2 - x1) * (y2 - y1))
+            depth_score = min(1.0, bbox_area / _DEPTH_REF_AREA)
+
+            # Team color
+            team_color: Optional[str] = None
+            if self._team_detection and frame is not None:
+                try:
+                    team_color = _sample_team_color(frame, x1, y1, x2, y2)
+                except Exception:
+                    pass
 
             hist = self._history.get(track_id)
             if hist is None:
@@ -120,19 +192,21 @@ class Tracker:
             hist["frames_gone"] = 0
 
             enriched.append({
-                "id":         track_id,
-                "bbox":       [x1, y1, x2, y2],
-                "center":     (cx, cy),
-                "velocity":   (vx, vy),
-                "speed":      speed,
-                "angle":      angle,
-                "confidence": conf,
-                "class_id":   class_id,
-                "age":        hist["age"],
-                "trail":      list(hist["trail"]),
+                "id":          track_id,
+                "bbox":        [x1, y1, x2, y2],
+                "center":      (cx, cy),
+                "velocity":    (vx, vy),
+                "speed":       speed,
+                "angle":       angle,
+                "confidence":  conf,
+                "class_id":    class_id,
+                "age":         hist["age"],
+                "trail":       list(hist["trail"]),
+                "depth_score": depth_score,
+                "team_color":  team_color,
             })
 
-        # Age-out tracks that are no longer active
+        # Age-out stale tracks
         stale = []
         for tid, hist in self._history.items():
             if tid not in active_ids:
@@ -150,6 +224,9 @@ class Tracker:
     def get_tracks(self) -> List[dict]:
         with self._lock:
             return list(self._current_tracks)
+
+    def set_team_detection(self, value: bool) -> None:
+        self._team_detection = value
 
     def reset(self) -> None:
         """Reset tracker state (e.g. when window changes)."""
