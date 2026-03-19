@@ -61,20 +61,37 @@ class Detector:
     # Public API
     # ------------------------------------------------------------------
 
+    def _resolve_device(self, requested: str):
+        """Resolve a device string to a torch-compatible device object."""
+        import torch
+        if requested == "cuda":
+            if torch.cuda.is_available():
+                return "cuda"
+            logger.warning("CUDA requested but not available, falling back to CPU.")
+            return "cpu"
+        if requested == "directml":
+            try:
+                import torch_directml
+                dml = torch_directml.device()
+                logger.info("DirectML initialised — AMD/Intel GPU acceleration active.")
+                return dml
+            except ImportError:
+                logger.warning(
+                    "torch-directml not installed, falling back to CPU. "
+                    "Run: pip install torch-directml"
+                )
+                return "cpu"
+        return "cpu"
+
     def load(self) -> None:
         """Load the YOLO model. Call once from inference thread before loop."""
         from ultralytics import YOLO
-        import torch
 
-        device = self._device
-        if device == "cuda" and not torch.cuda.is_available():
-            logger.warning("CUDA requested but not available, falling back to CPU.")
-            device = "cpu"
-        self._device = device
+        self._device = self._resolve_device(self._device)
 
-        logger.info("Loading YOLO model '%s' on device '%s'.", self._model_path, device)
+        logger.info("Loading YOLO model '%s' on device '%s'.", self._model_path, self._device)
         self._model = YOLO(self._model_path)
-        self._model.to(device)
+        self._model.to(self._device)
 
         if self._use_bg_sub:
             self._bg_subtractor = cv2.createBackgroundSubtractorMOG2(

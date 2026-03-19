@@ -119,7 +119,20 @@ class CaptureThread:
             logger.warning("Window '%s' has zero-size rect.", target)
             return None
 
-        return rect
+        # Clamp to screen bounds — maximized windows often extend a few pixels
+        # outside the desktop (DWM shadow), which dxcam rejects.
+        import ctypes
+        sw = ctypes.windll.user32.GetSystemMetrics(0)
+        sh = ctypes.windll.user32.GetSystemMetrics(1)
+        l = max(rect[0], 0)
+        t = max(rect[1], 0)
+        r = min(rect[2], sw)
+        b = min(rect[3], sh)
+        if r - l <= 0 or b - t <= 0:
+            logger.warning("Window '%s' has zero-size rect after clamping.", target)
+            return None
+
+        return (l, t, r, b)
 
     def _run(self) -> None:
         import dxcam

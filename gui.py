@@ -188,7 +188,7 @@ class ControlPanel(QWidget):
 
         # Device
         device_combo = QComboBox()
-        device_combo.addItems(["cuda", "cpu"])
+        device_combo.addItems(["cuda", "directml", "cpu"])
         device_combo.setCurrentText(self._config.get("detection", {}).get("device", "cuda"))
         device_combo.currentTextChanged.connect(
             lambda v: self._on_change("detection", "device", v)

@@ -8,7 +8,7 @@ detection:
   confidence: 0.15
   nms_iou: 0.45
   use_background_subtraction: false  # keep off for moving-camera games
-  device: "cuda"                # "cuda" or "cpu"
+  device: "cuda"                # "cuda" (NVIDIA) | "directml" (AMD/Intel, Windows) | "cpu"
   detect_all_classes: false     # false = COCO class 0 only; true = all (for custom models)
   # Auto-confidence: automatically raises/lowers the threshold so the number of detected
   # characters per frame stays near your target. Useful when scene density changes a lot.

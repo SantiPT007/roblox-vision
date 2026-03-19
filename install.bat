@@ -51,16 +51,41 @@ if %errorlevel% neq 0 ( echo [WARN] pip upgrade failed, continuing anyway. )
 if %errorlevel% neq 0 ( echo [WARN] setuptools pin failed, continuing anyway. )
 
 echo.
-echo [2/5] Installing PyTorch (CUDA 12.8) - no cache, no compile, binary only...
-echo       This is the large download (~2 GB). Installing alone to avoid RAM spike.
-"%PYTHON%" -m pip install torch torchvision ^
-    --index-url https://download.pytorch.org/whl/cu128 ^
-    --no-cache-dir ^
-    --prefer-binary ^
-    --no-deps
+echo ============================================
+echo  Select your GPU vendor:
+echo    1 = NVIDIA  (installs PyTorch CUDA 12.8)
+echo    2 = AMD     (installs PyTorch CPU + torch-directml)
+echo    3 = CPU only
+echo ============================================
+set /p GPU_CHOICE="Enter 1, 2 or 3: "
+
+echo.
+if "%GPU_CHOICE%"=="2" (
+    echo [2/5] Installing PyTorch ^(CPU build for DirectML^) - no cache, binary only...
+    echo       AMD users: torch-directml handles GPU compute via DirectX 12.
+    "%PYTHON%" -m pip install torch torchvision ^
+        --index-url https://download.pytorch.org/whl/cpu ^
+        --no-cache-dir ^
+        --prefer-binary ^
+        --no-deps
+) else if "%GPU_CHOICE%"=="3" (
+    echo [2/5] Installing PyTorch ^(CPU only^)...
+    "%PYTHON%" -m pip install torch torchvision ^
+        --index-url https://download.pytorch.org/whl/cpu ^
+        --no-cache-dir ^
+        --prefer-binary ^
+        --no-deps
+) else (
+    echo [2/5] Installing PyTorch ^(CUDA 12.8^) - no cache, no compile, binary only...
+    echo       This is the large download ^(~2 GB^). Installing alone to avoid RAM spike.
+    "%PYTHON%" -m pip install torch torchvision ^
+        --index-url https://download.pytorch.org/whl/cu128 ^
+        --no-cache-dir ^
+        --prefer-binary ^
+        --no-deps
+)
 if %errorlevel% neq 0 (
     echo [ERROR] PyTorch install failed.
-    echo         Try: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
     pause
     exit /b 1
 )
@@ -97,6 +122,13 @@ if errorlevel 1 echo [WARN] boxmot failed - check manually after.
 for %%P in (filterpy ftfy gdown gitpython lapx loguru pandas regex scikit-learn yacs) do (
     "%PYTHON%" -m pip install %%P --no-cache-dir --prefer-binary
     if errorlevel 1 echo [WARN] %%P failed - check manually after.
+)
+
+if "%GPU_CHOICE%"=="2" (
+    echo.
+    echo [AMD] Installing torch-directml for AMD/Intel GPU acceleration...
+    "%PYTHON%" -m pip install torch-directml --no-cache-dir --prefer-binary
+    if errorlevel 1 echo [WARN] torch-directml failed - AMD GPU acceleration will not be available.
 )
 
 echo.
