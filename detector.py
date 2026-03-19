@@ -1,4 +1,4 @@
-            """
+"""
 detector.py — YOLOv8 inference wrapper with optional background subtraction
 and automatic confidence tuning.
 
