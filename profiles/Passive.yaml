@@ -10,19 +10,19 @@ tracking:
 cursor_follow:
   enabled: false
   fps_mode: false
-  smoothing: 0.05
-  speed: 1.8
-  follow_radius: 200
-  follow_point: "head"
-  prediction_ms: 100
-  deadzone: 2
+  smoothing: 0.40
+  speed: 0.7
+  follow_radius: 300
+  follow_point: "chest"
+  prediction_ms: 30
+  deadzone: 8
   prefer_closest_depth: false
   snapback_threshold: 15
   snapback_pause_ms: 200
   pid:
-    kp: 0.6
+    kp: 0.25
     ki: 0.0
-    kd: 0.05
+    kd: 0.10
   tracker:
     smoothing_factor: 0.5
     stop_threshold: 20.0

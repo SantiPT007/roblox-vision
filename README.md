@@ -1,95 +1,102 @@
-# roblox-vision
+<div align="center">
 
-Real-time AI character detection, tracking, and overlay for Windows — built for Roblox.
+# 🎯 character-tracker
 
-Captures game footage via DXGI Desktop Duplication (GPU), runs YOLOv8 for character detection, ByteTrack for multi-object tracking, and renders a transparent always-on-top overlay. No memory reading, no process injection.
+**Real-time AI character detection, tracking, and overlay for Roblox on Windows**
 
-> **Branch guide**
-> - `master` — stable release
-> - `experimental` — active development, new features (may be unstable)
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)
+![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D4?style=flat-square&logo=windows&logoColor=white)
+![GPU](https://img.shields.io/badge/GPU-DirectX%2012%20%28DirectML%29-76B900?style=flat-square&logo=nvidia&logoColor=white)
+![Runtime](https://img.shields.io/badge/Runtime-ONNX-FF6F00?style=flat-square)
+![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
+
+*No CUDA. No PyTorch. No process injection. No memory reading.*
+
+</div>
 
 ---
 
-## Features
+## ✨ What it does
 
-### Detection & Tracking
-- **YOLOv8 inference** — CUDA-accelerated, ~60 fps on GPU, CPU fallback
-- **ByteTrack** — persistent character IDs across frames
-- **Depth estimation** — ranks targets by proximity using bounding box area
-- **Team color detection** *(experimental)* — samples pixels above each bbox to detect team indicator hue
-- **Auto-confidence tuning** — automatically adjusts detection threshold to stay near a target detection count
-- **Background subtraction** — optional MOG2 pre-filter for static-camera scenes
-- **Live model swap** — hot-reload any `.pt` file from the GUI without restart
+Captures the Roblox window via DXGI Desktop Duplication (GPU path), runs a YOLOv8 ONNX model for real-time character detection, tracks each character across frames with ByteTrack, and renders a fully transparent always-on-top overlay. All in a multi-threaded pipeline tuned for low latency.
 
-### Overlay
-- Bounding boxes with ID, confidence, and depth labels
-- Fading motion trails
-- Velocity direction arrows
-- FOV circle (follows cursor in normal mode, screen center in FPS mode)
-- Mini-map with scaled character positions
-- Camera direction cone — estimates which way the camera is rotating
-- Status indicators (detection on/off, lock on/off)
-- FPS counters (capture + inference)
+---
 
-### Mouse Lock
-- **Two modes** — Normal (visible cursor, proportional) and FPS (low-gain, deadzone, no prediction)
-- **Smoothing curves** — `linear`, `exponential` (ease-in), `bezier` (S-curve)
-- **Velocity prediction** — extrapolates target position forward in time
-- **Depth-priority targeting** — prefer the closest (largest bbox) character over nearest-to-cursor
-- **Snap-back prevention** — pauses lock when unexpected cursor movement is detected (user grabbed mouse)
+## 🚀 Features
 
-### Triggerbot
+### 🔍 Detection & Tracking
+| Feature | Details |
+|---------|---------|
+| **ONNX + DirectML inference** | GPU-accelerated on any DirectX 12 GPU — no CUDA required |
+| **ByteTrack** | Persistent character IDs across frames, handles occlusion |
+| **Depth estimation** | Ranks targets by approximate proximity (bounding box area) |
+| **Hot model swap** | Reload any `.onnx` file from the GUI without restarting |
+
+### 🖼️ Overlay
+| Element | Details |
+|---------|---------|
+| Bounding boxes | ID, confidence, and depth label per character |
+| Motion trails | Fading path showing recent movement |
+| Velocity arrows | Live direction + speed indicator per track |
+| FOV circle | Follows cursor (normal mode) or screen center (FPS mode) |
+| Mini-map | Scaled character positions across the entire game view |
+| Camera cone | Estimates which direction the camera is rotating |
+| Status indicators | Detection on/off, lock on/off |
+
+### 🖱️ Mouse Lock
+| Feature | Details |
+|---------|---------|
+| **PID controller** | Smooth, overshoot-free movement (`pid_controller.py`) |
+| **SmartTracker** | Velocity prediction with direction-change smoothing |
+| **Normal + FPS modes** | Visible-cursor PID vs. camera-space low-gain with deadzone |
+| **Depth-priority targeting** | Target the closest (largest bbox) character |
+| **Snap-back prevention** | Pauses lock when user grabs the mouse |
+| **Aim Y-reduce** | Suppresses vertical correction after a configurable delay |
+| **Configurable aim point** | `head`, `chest`, or `center` with ratio offset |
+
+### 🔫 Triggerbot
 - Auto-clicks when cursor is inside a detected bounding box
-- Configurable random delay (min/max ms) for natural timing
-- Runtime toggle via hotkey (default F5)
+- Configurable random delay (`delay_min_ms` / `delay_max_ms`) for natural timing
+- Toggle on/off with a hotkey (default **F5**)
+- Configurable hit padding in pixels
 
-### Recoil Compensation
-- Steps through a configurable `[dx, dy]` pattern while fire key is held
-- Positive dy = push mouse down = counter upward gun kick
-- Configurable step interval (match to weapon fire rate) and reset delay
-- 5 built-in pattern presets: Light, Medium, Heavy Spray, AR Pattern, SMG Burst
+### 🗂️ Profiles & Presets
+- **Aimlock presets** — Flick, Precise, Smooth, FPS Flick, FPS Smooth, FPS Gentle (apply in one click)
+- **Full config profiles** — save/load/delete complete config snapshots as named YAML files
 
-### Profiles & Presets
-- **Aimlock presets** — quick-apply cursor_follow settings (Flick, Precise, Smooth, FPS variants)
-- **Recoil pattern presets** — swap recoil patterns from the GUI
-- **Full config profiles** — save/load complete config snapshots as named YAML files (`profiles/`)
-  - 7 built-in profiles: Aggressive, Stealth, FPS Competitive, Sniper, Spray Control, Close Quarters, Passive Observer, Dev Testing
-
-### System
-- **Performance dashboard** — floating widget showing CPU%, RAM%, GPU%, VRAM, pipeline FPS
-- **Settings GUI** — live config edits, all changes propagate to running threads without restart
-- **Save to disk** — persist settings to `config.yaml` at any time
+### 📊 System
+- **Settings GUI** — live config edits propagate to all threads without restart
+- **Performance dashboard** — floating widget: CPU%, RAM%, GPU%, VRAM, capture FPS, inference FPS, track count, active target
+- **Save to disk** — persist your settings to `config.yaml` at any time
 
 ---
 
-## Requirements
+## 📋 Requirements
 
-- Windows 10/11 (64-bit)
-- Python 3.11+
-- NVIDIA GPU with CUDA 12.8 recommended (CPU fallback works but is slow)
-- DirectX 11/12 capable display
+- **OS**: Windows 10 / 11 (64-bit)
+- **Python**: 3.11 or newer
+- **GPU**: DirectX 12 capable (required for DirectML; CPU fallback available)
+- **No CUDA, no PyTorch, no administrator required to run**
 
 ---
 
-## Installation
+## 📦 Installation
 
 ```bat
 install.bat
 ```
 
-Runs as Administrator, detects your Python installation, and installs all dependencies including PyTorch (CUDA 12.8, ~2 GB download).
-
-> **Different CUDA version?** Edit `install.bat` and change `cu128` to match your driver (e.g. `cu121` for CUDA 12.1). Check your version with `nvidia-smi`.
+Requests administrator once to install Python packages, then you never need to run as admin again. Installs `onnxruntime-directml`, PyQt6, OpenCV, dxcam, boxmot, and all other dependencies automatically.
 
 ---
 
-## Usage
+## ▶️ Usage
 
 ```bat
 start.bat
 ```
 
-Or directly:
+Or from a terminal:
 
 ```bash
 python main.py
@@ -99,24 +106,25 @@ python main.py --config my.yaml    # custom config file
 
 ---
 
-## Hotkeys (defaults)
+## ⌨️ Hotkeys
 
 | Key | Action |
 |-----|--------|
-| F6 | Toggle detection on/off |
-| F7 | Toggle mouse lock on/off |
-| F4 | Hold to lock, release to stop |
-| F5 | Toggle triggerbot on/off |
+| **F6** | Toggle character detection on/off |
+| **F7** | Toggle mouse lock on/off |
+| **F4** | Hold to lock, release to stop |
+| **F5** | Toggle triggerbot on/off |
 
-All hotkeys are configurable in the GUI or `config.yaml`.
+All hotkeys are fully configurable in the GUI or directly in `config.yaml`.
 
 ---
 
-## Configuration
+## ⚙️ Configuration
 
-All settings are in `config.yaml`. Everything can also be changed live in the GUI.
+All settings live in `config.yaml`. Every setting can also be changed live in the GUI without restarting.
 
-### `capture`
+<details>
+<summary><b>capture</b></summary>
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -124,50 +132,54 @@ All settings are in `config.yaml`. Everything can also be changed live in the GU
 | `fps_cap` | `60` | Target capture frame rate |
 | `region` | `null` | `null` = full window; `[x, y, w, h]` for sub-region |
 
-### `detection`
+</details>
+
+<details>
+<summary><b>detection</b></summary>
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `model` | `"models/yolov8n-default.pt"` | Path to YOLO weights |
-| `confidence` | `0.15` | Detection confidence threshold |
-| `nms_iou` | `0.45` | NMS IoU threshold |
-| `device` | `"cuda"` | `"cuda"` or `"cpu"` |
-| `detect_all_classes` | `false` | `false` = COCO person only; `true` = all (custom models) |
-| `auto_confidence` | `false` | Auto-adjust threshold toward `auto_conf_target` |
-| `auto_conf_target` | `3` | Desired detections per frame when auto-confidence is on |
-| `auto_conf_min` | `0.08` | Auto-confidence floor |
-| `auto_conf_max` | `0.60` | Auto-confidence ceiling |
-| `team_detection` | `false` | *(experimental)* Detect team color from nametag pixels |
+| `model` | `"models/Roblox.onnx"` | Path to ONNX model weights |
+| `confidence` | `0.35` | Detection confidence threshold |
+| `nms_iou` | `0.35` | NMS IoU threshold |
 
-### `cursor_follow`
+</details>
+
+<details>
+<summary><b>tracking</b></summary>
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `max_age` | `30` | Frames before a lost track is dropped |
+| `min_hits` | `2` | Minimum detections to confirm a track |
+
+</details>
+
+<details>
+<summary><b>cursor_follow</b></summary>
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `enabled` | `false` | Start with lock enabled |
-| `fps_mode` | `false` | FPS mode (camera-controlled games) |
-| `smoothing` | `0.12` | 0.0 = instant, 1.0 = no movement |
-| `smoothing_curve` | `"linear"` | `"linear"`, `"exponential"`, or `"bezier"` |
+| `fps_mode` | `false` | FPS mode for camera-controlled games |
+| `smoothing` | `0.12` | 0.0 = instant snap, 1.0 = no movement |
 | `speed` | `1.0` | Movement speed multiplier |
-| `follow_radius` | `150` | Pixel radius around cursor to activate locking |
+| `follow_radius` | `150` | Pixel radius around cursor to activate lock |
 | `follow_point` | `"chest"` | `"head"`, `"chest"`, or `"center"` |
-| `prediction_ms` | `60` | ms to extrapolate target position (normal mode only) |
+| `head_height_ratio` | `0.15` | 0.0–1.0, how far down the box the aim point sits |
+| `prediction_ms` | `60` | ms to extrapolate target position forward |
 | `deadzone` | `5` | No correction within this radius (FPS mode only) |
-| `target_class` | `null` | `null` = any class; `1` = enemies only (`rivals.pt`) |
-| `prefer_closest_depth` | `false` | Prefer target with the largest bbox (nearest in 3D) |
-| `snapback_threshold` | `15` | Pixels of unexpected movement that trigger a pause |
-| `snapback_pause_ms` | `200` | ms to pause lock after snap-back detected |
+| `prefer_closest_depth` | `false` | Prefer the largest (nearest) character |
+| `aim_y_reduce` | `false` | Suppress Y correction after locking for a delay |
+| `aim_y_reduce_delay` | `0.6` | Seconds before Y correction is suppressed |
+| `snapback_threshold` | `15` | Pixels of unexpected movement to trigger pause |
+| `snapback_pause_ms` | `200` | ms to pause lock after snap-back detection |
+| `pid.kp / ki / kd` | `0.4 / 0.0 / 0.08` | PID controller gains |
 
-### `recoil`
+</details>
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `enabled` | `false` | Enable recoil compensation |
-| `fire_key` | `"left"` | `"left"` = LMB, `"right"` = RMB, or any key |
-| `step_ms` | `80` | ms between pattern steps — match weapon fire rate |
-| `reset_ms` | `600` | ms of inactivity before pattern resets to step 0 |
-| `pattern` | `[...]` | List of `[dx, dy]` offsets. Positive dy = push mouse down |
-
-### `triggerbot`
+<details>
+<summary><b>triggerbot</b></summary>
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -175,127 +187,121 @@ All settings are in `config.yaml`. Everything can also be changed live in the GU
 | `hotkey` | `"F5"` | Runtime toggle hotkey |
 | `delay_min_ms` | `50` | Minimum random click delay |
 | `delay_max_ms` | `120` | Maximum random click delay |
-| `padding` | `5` | Extra pixels outside bbox edge that count as "inside" |
+| `padding` | `5` | Extra pixels outside bbox that count as "inside" |
 
-### `overlay`
+</details>
+
+<details>
+<summary><b>overlay</b></summary>
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `show_boxes` | `true` | Bounding boxes and labels |
+| `show_boxes` | `true` | Bounding boxes + labels |
 | `show_trails` | `true` | Fading motion trails |
-| `show_velocity` | `true` | Velocity arrows |
+| `show_velocity` | `true` | Velocity direction arrows |
 | `show_radius_circle` | `true` | FOV circle |
-| `show_minimap` | `true` | Mini-map (bottom-right) |
-| `show_direction_cone` | `true` | Camera direction arrow on mini-map |
-| `trail_length` | `20` | Positions in trail history |
-| `active_color` | `[0,255,80]` | RGB color for locked target |
-| `inactive_color` | `[0,200,255]` | RGB color for other tracks |
+| `show_minimap` | `true` | Mini-map (bottom-right corner) |
+| `show_direction_cone` | `true` | Camera direction indicator |
+| `trail_length` | `20` | Positions kept in trail history |
+| `active_color` | `[0,255,80]` | RGB color for the locked target |
+| `inactive_color` | `[0,200,255]` | RGB color for all other tracks |
+
+</details>
 
 ---
 
-## Models
+## 🤖 Model
 
-Place `.pt` files in the `models/` folder. The GUI model dropdown auto-scans this folder on launch (use the ↺ button to refresh).
+Place `.onnx` files in the `models/` folder. The GUI model picker auto-scans this folder on launch (hit **↺** to refresh).
 
-| Model | Classes | Notes |
-|-------|---------|-------|
-| `yolov8n-default.pt` | COCO person (class 0) | General baseline |
-| `roblox-character-mid.pt` | 1 class | Trained on 6 000+ Roblox avatar images |
-| `rivals-best.pt` | `friendly` (0), `roblox avatar` (1) | Enable "Enemies only" in GUI to lock class 1 only |
-
-Enable **Detect all classes** in the GUI when using custom multi-class models.
-
-To download your own Roboflow model:
+### Download from Roboflow
 
 ```bash
 python download_model.py YOUR_API_KEY YOUR_WORKSPACE YOUR_PROJECT
 ```
 
----
+### Train a custom model
 
-## Profiles
-
-Saved profiles live in `profiles/` as YAML files. Load/save/delete from the GUI.
-
-Built-in profiles:
-
-| Profile | Description |
-|---------|-------------|
-| `Aggressive` | Max speed, head aim, triggerbot on, AR recoil |
-| `Stealth` | Slow bezier movement, no automation, looks human |
-| `FPS Competitive` | FPS mode, recoil on, no triggerbot |
-| `Sniper` | Tight FOV, head aim, exponential curve, delayed triggerbot |
-| `Spray Control` | Heavy recoil pattern, fast triggerbot, closest-target priority |
-| `Close Quarters` | SMG pattern, huge FOV, max speed |
-| `Passive Observer` | No lock/recoil/triggerbot — overlay + team detection only |
-| `Dev Testing` | High confidence, all overlays, perf dashboard |
+```bash
+python train_model.py YOUR_API_KEY
+# then export:
+yolo export model=runs/detect/train/weights/best.pt format=onnx
+```
 
 ---
 
-## Project Structure
+## 🗂️ Profiles
+
+Profiles are YAML files in the `profiles/` directory. Load, save, and delete them from the **Saved Profiles** section in the GUI.
+
+Five presets are included: `Precision`, `Aggressive`, `Smooth`, `FPS Competitive`, `Passive`.
+
+---
+
+## 🏗️ Project Structure
 
 ```
-roblox-vision/
-├── main.py            # Entry point, thread orchestration
-├── capture.py         # dxcam DXGI screen capture thread
-├── detector.py        # YOLOv8 async inference + auto-confidence
-├── tracker.py         # ByteTrack wrapper — trails, velocity, depth, team color
-├── cursor.py          # Mouse lock, recoil, triggerbot, snap-back
-├── overlay.py         # PyQt6 transparent overlay
-├── gui.py             # Settings control panel
-├── profiles.py        # Profile save/load/delete
-├── perf_monitor.py    # Floating performance dashboard widget
-├── config.yaml        # User configuration + presets
-├── requirements.txt   # Python dependencies
-├── download_model.py  # Roboflow model downloader utility
-├── install.bat        # Automated dependency installer
-├── start.bat          # Launcher (auto-elevates to Admin)
-├── models/            # YOLO model weights (.pt files)
-└── profiles/          # Saved config snapshots (.yaml files)
+character-tracker/
+├── main.py             Entry point — thread orchestration + Qt event loop
+├── capture.py          dxcam DXGI screen capture thread
+├── detector.py         ONNX async inference (DirectML / CPU fallback)
+├── tracker.py          ByteTrack wrapper — trails, velocity, depth
+├── cursor.py           Mouse lock, PID, triggerbot, snap-back prevention
+├── overlay.py          PyQt6 transparent always-on-top overlay
+├── gui.py              Settings control panel
+├── profiles.py         Profile save / load / delete
+├── perf_monitor.py     Floating performance dashboard widget
+├── pid_controller.py   PID controller for smooth aiming
+├── smart_tracker.py    Velocity prediction with direction-change smoothing
+├── config.yaml         User configuration + aimlock presets
+├── requirements.txt    Python dependencies
+├── download_model.py   Roboflow ONNX model downloader utility
+├── train_model.py      YOLOv8 training utility
+├── install.bat         Automated dependency installer
+├── start.bat           Launcher (no elevation required)
+├── models/             ONNX model weights (.onnx files go here)
+└── profiles/           Saved config snapshots (.yaml files)
 ```
 
 ### Thread layout
 
 ```
-Main thread (Qt event loop)
-├── CaptureThread     dxcam DXGI → frame_queue (~60 fps)
-├── FrameBridge       frame queue bridge (daemon)
-├── InferenceThread   YOLOv8 + ByteTrack → SharedState (async)
-├── CursorFollower    SharedState → Win32 SendInput @ 120 Hz
-│                     (recoil, triggerbot, snap-back, smoothing curves)
-├── CursorSync        syncs cursor state to SharedState (daemon)
-├── Overlay           transparent QPainter overlay @ 60 fps
-├── ControlPanel      settings GUI
-└── PerfDashboard     optional floating perf widget
+Main thread  (Qt event loop)
+├── CaptureThread      dxcam DXGI → frame_queue  (~60 fps)
+├── FrameBridge        queue bridge               (daemon)
+├── InferenceThread    ONNX + ByteTrack → SharedState
+├── CursorFollower     SharedState → Win32 SendInput @ 120 Hz
+│                      (PID, SmartTracker, triggerbot, snap-back)
+├── CursorSync         sync cursor state → SharedState (daemon)
+├── Overlay            transparent QPainter overlay @ 60 fps
+├── ControlPanel       settings GUI
+└── PerfDashboard      optional floating perf widget
 ```
 
 ---
 
-## Troubleshooting
+## 🛠️ Troubleshooting
 
 **Black frames / dxcam fails**
-- Ensure the window is not minimized and is on the primary display.
-- Use borderless windowed mode — exclusive fullscreen blocks DXGI.
-- Run as Administrator.
+> Ensure the Roblox window is not minimized and is on the primary display. Use borderless windowed mode — exclusive fullscreen blocks DXGI.
 
-**CUDA not detected**
-- Run: `python -c "import torch; print(torch.cuda.is_available())"`
-- Reinstall PyTorch with the correct CUDA index URL for your driver.
+**DirectML not detected / inference runs on CPU**
+> Run `pip show onnxruntime-directml` to confirm it is installed. Make sure your GPU supports DirectX 12 (`dxdiag` → Display tab).
 
-**Hotkeys not working**
-- Global hotkeys require Administrator privileges. Use `start.bat`.
+**Hotkeys not responding**
+> The program does not need to run as administrator. If using a non-default hotkey that conflicts with another application, change it in `config.yaml`.
 
-**Recoil going the wrong way**
-- The pattern uses positive `dy` = push mouse down. If your recoil still feels wrong, flip the dy signs in your pattern.
-
-**Performance dashboard shows N/A for GPU**
-- Install `pynvml`: `pip install pynvml`
+**GPU stats show N/A in the performance dashboard**
+> Install `nvidia-ml-py`: `pip install nvidia-ml-py` (NVIDIA GPUs only).
 
 ---
 
-## Notes
+## 🙏 Credits
 
-- Screen capture only — never calls `ReadProcessMemory` or any process introspection API.
-- Admin privileges are required solely for global hotkeys (`keyboard` library limitation on Windows).
-- The overlay is fully click-through and does not interfere with mouse input to the game.
-- Check the terms of service of any game before use.
+Big thanks to **[Axiom AI](https://github.com/iisHong0w0/Axiom-AI-Aimbot)** — the `Roblox.onnx` character detection model used by this project comes from their repository.
+
+---
+
+## 📜 License
+
+MIT — see [LICENSE](LICENSE) for details.

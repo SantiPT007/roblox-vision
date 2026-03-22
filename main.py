@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import ctypes
 import logging
 import os
 import queue
@@ -21,6 +22,12 @@ import time
 from typing import List, Optional
 
 import yaml
+
+# Import detector and tracker at module level so onnxruntime's DLLs are
+# loaded in the main thread. Loading them inside a worker thread can cause
+# DLL initialisation failures on Windows (DllMain restrictions + PATH issues).
+from detector import Detector
+from tracker import Tracker
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -35,6 +42,51 @@ logger = logging.getLogger("main")
 
 
 # ---------------------------------------------------------------------------
+# Precision sleep helpers
+# ---------------------------------------------------------------------------
+
+def _sleep_precise(seconds: float) -> None:
+    """Sleep with better precision for very short intervals on Windows."""
+    if seconds <= 0:
+        return
+
+    if seconds >= 0.002:
+        time.sleep(seconds)
+        return
+
+    # Reduce CPU spin on sub-2ms waits:
+    # 1) cooperatively yield while remaining time is still relatively large
+    # 2) only busy-wait in a very small tail window for precision
+    deadline = time.perf_counter() + seconds
+    spin_threshold = 0.0002  # 0.2ms spin window
+
+    while True:
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            break
+
+        if remaining > spin_threshold:
+            sleep_for = max(0.0, remaining - spin_threshold)
+            if sleep_for >= 0.001:
+                time.sleep(sleep_for)
+            else:
+                time.sleep(0)
+
+
+def _set_windows_timer_resolution_1ms(enable: bool) -> bool:
+    """Enable/disable 1ms timer resolution on Windows. Returns success status."""
+    if os.name != 'nt':
+        return False
+    try:
+        winmm = ctypes.WinDLL('winmm')
+        if enable:
+            return winmm.timeBeginPeriod(1) == 0
+        return winmm.timeEndPeriod(1) == 0
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Config loader
 # ---------------------------------------------------------------------------
 
@@ -45,17 +97,9 @@ _DEFAULT_CONFIG = {
         "region": None,
     },
     "detection": {
-        "model": "models/yolov8n-default.pt",
-        "confidence": 0.45,
-        "nms_iou": 0.45,
-        "use_background_subtraction": False,
-        "device": "cuda",
-        "detect_all_classes": False,
-        "auto_confidence": False,
-        "auto_conf_min": 0.08,
-        "auto_conf_max": 0.60,
-        "auto_conf_target": 3,
-        "team_detection": False,
+        "model": "models/Roblox.onnx",
+        "confidence": 0.35,
+        "nms_iou": 0.35,
     },
     "tracking": {
         "max_age": 30,
@@ -70,23 +114,19 @@ _DEFAULT_CONFIG = {
         "enabled": False,
         "fps_mode": False,
         "smoothing": 0.12,
-        "smoothing_curve": "linear",
         "speed": 1.0,
         "follow_radius": 150,
         "follow_point": "chest",
         "prediction_ms": 60,
         "deadzone": 5,
-        "target_class": None,
         "prefer_closest_depth": False,
+        "head_height_ratio": 0.15,
+        "aim_y_reduce": False,
+        "aim_y_reduce_delay": 0.6,
         "snapback_threshold": 15,
         "snapback_pause_ms": 200,
-    },
-    "recoil": {
-        "enabled": False,
-        "fire_key": "left",
-        "step_ms": 80,
-        "reset_ms": 600,
-        "pattern": [[0, -5], [0, -5], [1, -4], [0, -4], [1, -3], [0, -3], [-1, -3], [0, -2]],
+        "pid": {"kp": 0.4, "ki": 0.0, "kd": 0.08},
+        "tracker": {"smoothing_factor": 0.5, "stop_threshold": 20.0, "position_deadzone": 4.0},
     },
     "triggerbot": {
         "enabled": False,
@@ -112,7 +152,6 @@ _DEFAULT_CONFIG = {
     "perf_dashboard": {
         "enabled": False,
     },
-    "recoil_presets": {},
 }
 
 
@@ -198,9 +237,6 @@ def inference_loop(
     state: SharedState,
     stop_event: threading.Event,
 ) -> None:
-    from detector import Detector
-    from tracker import Tracker
-
     detector = Detector(config)
     tracker  = Tracker(config)
 
@@ -237,7 +273,7 @@ def inference_loop(
             if last_frame is not None:
                 frame = last_frame
             else:
-                time.sleep(0.005)
+                _sleep_precise(0.005)
                 continue
 
         last_frame = frame
@@ -264,7 +300,7 @@ def inference_loop(
             diag_detections = 0
             diag_last = now
 
-        time.sleep(0.001)
+        _sleep_precise(0.001)
 
 
 # ---------------------------------------------------------------------------
@@ -287,13 +323,6 @@ def main():
 
     state = SharedState()
 
-    # Pre-load torch DLLs on the main thread before Qt starts
-    try:
-        import torch          # noqa: F401
-        from ultralytics import YOLO  # noqa: F401
-    except Exception:
-        pass
-
     from PyQt6.QtWidgets import QApplication
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
@@ -307,6 +336,9 @@ def main():
 
     capture = CaptureThread(config)
     capture.start()
+
+    # Enable 1ms timer resolution for the lifetime of the app
+    _high_res_timer = _set_windows_timer_resolution_1ms(True)
 
     def _bridge_frames():
         while not state.stop_event.is_set():
@@ -322,7 +354,7 @@ def main():
                 except queue.Full:
                     pass
             else:
-                time.sleep(0.001)
+                _sleep_precise(0.001)
             state.capture_fps = capture.capture_fps
 
     bridge_thread = threading.Thread(
@@ -429,28 +461,11 @@ def main():
                     det.reload_model(value)
                 elif key == "confidence":
                     det.set_confidence(value)
-                elif key == "detect_all_classes":
-                    det.set_detect_all_classes(bool(value))
-                elif key == "auto_confidence":
-                    det.set_auto_confidence(bool(value))
-                elif key in ("auto_conf_min", "auto_conf_max", "auto_conf_target"):
-                    det.set_auto_conf_params(
-                        config["detection"]["auto_conf_min"],
-                        config["detection"]["auto_conf_max"],
-                        config["detection"]["auto_conf_target"],
-                    )
-                elif key == "team_detection":
-                    trk = state.tracker
-                    if trk is not None:
-                        trk.set_team_detection(bool(value))
 
         elif section == "cursor_follow":
             cursor.update_config(key, value)
             if key == "enabled":
                 cursor.set_enabled(bool(value))
-
-        elif section == "recoil":
-            cursor.update_recoil(key, value)
 
         elif section == "triggerbot":
             cursor.update_triggerbot(key, value)
@@ -484,6 +499,8 @@ def main():
         state.stop_event.set()
         cursor.stop()
         capture.stop()
+        if _high_res_timer:
+            _set_windows_timer_resolution_1ms(False)
 
     app.aboutToQuit.connect(_cleanup)
 

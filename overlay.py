@@ -2,7 +2,6 @@
 overlay.py — Transparent always-on-top fullscreen overlay drawn with QPainter.
 Renders bounding boxes, trails, velocity arrows, mini-map, direction cone, and status info.
 
-Multi-monitor: uses capture.monitor_index to place the overlay on the correct screen.
 Direction cone: tracks average velocity of all detected objects to infer camera rotation
 direction and draws an arrow on the mini-map.
 """

@@ -35,15 +35,7 @@ if %errorlevel% neq 0 (
 "%PYTHON%" --version
 
 echo.
-echo ============================================
-echo  IMPORTANT: Close your IDE and other heavy
-echo  applications before continuing.
-echo  PyTorch is ~2 GB and will spike RAM/disk.
-echo ============================================
-echo.
-pause
-
-echo [1/5] Upgrading pip and pinning setuptools...
+echo [1/4] Upgrading pip and pinning setuptools...
 "%PYTHON%" -m pip install --upgrade pip --no-cache-dir
 if %errorlevel% neq 0 ( echo [WARN] pip upgrade failed, continuing anyway. )
 :: setuptools 81+ removes pkg_resources which boxmot requires at import time
@@ -51,70 +43,31 @@ if %errorlevel% neq 0 ( echo [WARN] pip upgrade failed, continuing anyway. )
 if %errorlevel% neq 0 ( echo [WARN] setuptools pin failed, continuing anyway. )
 
 echo.
-echo ============================================
-echo  Select your GPU vendor:
-echo    1 = NVIDIA  (installs PyTorch CUDA 12.8)
-echo    2 = AMD     (installs PyTorch CPU + torch-directml)
-echo    3 = CPU only
-echo ============================================
-set /p GPU_CHOICE="Enter 1, 2 or 3: "
-
-echo.
-if "%GPU_CHOICE%"=="2" (
-    echo [2/5] Installing PyTorch ^(CPU build for DirectML^) - no cache, binary only...
-    echo       AMD users: torch-directml handles GPU compute via DirectX 12.
-    "%PYTHON%" -m pip install torch torchvision ^
-        --index-url https://download.pytorch.org/whl/cpu ^
-        --no-cache-dir ^
-        --prefer-binary ^
-        --no-deps
-) else if "%GPU_CHOICE%"=="3" (
-    echo [2/5] Installing PyTorch ^(CPU only^)...
-    "%PYTHON%" -m pip install torch torchvision ^
-        --index-url https://download.pytorch.org/whl/cpu ^
-        --no-cache-dir ^
-        --prefer-binary ^
-        --no-deps
-) else (
-    echo [2/5] Installing PyTorch ^(CUDA 12.8^) - no cache, no compile, binary only...
-    echo       This is the large download ^(~2 GB^). Installing alone to avoid RAM spike.
-    "%PYTHON%" -m pip install torch torchvision ^
-        --index-url https://download.pytorch.org/whl/cu128 ^
-        --no-cache-dir ^
-        --prefer-binary ^
-        --no-deps
-)
+echo [2/4] Installing ONNX runtime ^(DirectML — GPU-accelerated on any DirectX 12 GPU^)...
+"%PYTHON%" -m pip install onnxruntime-directml --no-cache-dir --prefer-binary
 if %errorlevel% neq 0 (
-    echo [ERROR] PyTorch install failed.
+    echo [ERROR] onnxruntime-directml install failed.
     pause
     exit /b 1
 )
 
 echo.
-echo [3/5] Installing torchvision dependencies (numpy etc)...
-"%PYTHON%" -m pip install numpy --no-cache-dir --prefer-binary
-if %errorlevel% neq 0 ( echo [WARN] numpy install failed. )
-
-echo.
-echo [4/5] Installing OpenCV, PyQt6, pywin32, pyyaml, keyboard...
-echo       (all pure wheels, no compilation)
-for %%P in (opencv-python PyQt6 pywin32 pyyaml keyboard) do (
+echo [3/4] Installing OpenCV, PyQt6, pywin32, pyyaml, keyboard, numpy...
+for %%P in (opencv-python PyQt6 pywin32 pyyaml keyboard numpy) do (
     echo   Installing %%P...
     "%PYTHON%" -m pip install %%P --no-cache-dir --prefer-binary
     if errorlevel 1 echo [WARN] %%P failed - check manually after.
 )
 
 echo.
-echo [5/5] Installing ML packages (ultralytics, boxmot, dxcam)...
-echo       Using --prefer-binary to avoid compiler invocation.
-for %%P in (ultralytics dxcam) do (
+echo [4/4] Installing remaining packages ^(boxmot, dxcam, psutil, etc.^)...
+for %%P in (dxcam psutil nvidia-ml-py pyserial interception-python) do (
     echo   Installing %%P...
     "%PYTHON%" -m pip install %%P --no-cache-dir --prefer-binary
     if errorlevel 1 echo [WARN] %%P failed - check manually after.
 )
 :: boxmot must be installed with --no-deps because its pinned numpy/pandas/regex
 :: versions have no Python 3.14 wheels and fail to build from source.
-:: Dependencies are already installed by the steps above.
 echo   Installing boxmot (no-deps to avoid source builds on Python 3.14)...
 "%PYTHON%" -m pip install boxmot --no-cache-dir --prefer-binary --no-deps
 if errorlevel 1 echo [WARN] boxmot failed - check manually after.
@@ -124,18 +77,11 @@ for %%P in (filterpy ftfy gdown gitpython lapx loguru pandas regex scikit-learn 
     if errorlevel 1 echo [WARN] %%P failed - check manually after.
 )
 
-if "%GPU_CHOICE%"=="2" (
-    echo.
-    echo [AMD] Installing torch-directml for AMD/Intel GPU acceleration...
-    "%PYTHON%" -m pip install torch-directml --no-cache-dir --prefer-binary
-    if errorlevel 1 echo [WARN] torch-directml failed - AMD GPU acceleration will not be available.
-)
-
 echo.
 echo ============================================
 echo  Installation complete.
-echo  Edit config.yaml to set your target window,
-echo  then run start.bat to launch.
+echo  Place your .onnx model in models/, edit
+echo  config.yaml, then run start.bat to launch.
 echo.
 echo  If any [WARN] appeared above, re-run this
 echo  script or install that package manually.

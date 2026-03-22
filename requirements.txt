@@ -1,8 +1,4 @@
-# torch and torchvision are installed separately in install.bat
-# to avoid memory runaway from overlapping large downloads.
-# Do NOT add them here.
-
-ultralytics>=8.0.0
+onnxruntime-directml
 opencv-python
 boxmot
 PyQt6
@@ -14,5 +10,4 @@ pyserial
 dxcam
 interception-python
 psutil
-pynvml
-torch-directml           # AMD/Intel GPU acceleration on Windows (DirectX 12)
+nvidia-ml-py

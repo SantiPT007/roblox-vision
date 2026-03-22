@@ -15,15 +15,25 @@ env/
 
 # Dataset downloads (contain absolute paths with username)
 rf_dataset/
-rf_rivals/
+rf_*/
 
 # Training outputs (contain absolute paths with username)
 runs/
 train_log.txt
 rivals_train_log.txt
 
+# Model weights (large binaries — distribute separately)
+*.pt
+*.onnx
+models/*
+!models/.gitkeep
+
+# Axiom reference project (temporary, not part of this repo)
+Axiom/
+
 # Logs
 *.log
+*.zip
 
 # IDE
 .idea/
@@ -34,4 +44,3 @@ rivals_train_log.txt
 # OS
 .DS_Store
 Thumbs.db
-*.zip

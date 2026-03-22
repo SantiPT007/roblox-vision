@@ -1,52 +1,161 @@
 """
-detector.py — YOLOv8 inference wrapper with optional background subtraction
-and automatic confidence tuning.
-
-Auto-confidence mode: tracks a rolling window of detection counts and nudges
-the confidence threshold up/down to stay near a configured target count,
-bounded by auto_conf_min / auto_conf_max.
+detector.py — ONNX-based inference wrapper.
 """
 
 import logging
+import os
 import threading
-from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import List, Optional
 
 import cv2
 import numpy as np
 
+# Register the onnxruntime DLL directory before importing.
+# When the app runs elevated via UAC, Windows strips the user PATH, which
+# prevents onnxruntime's bundled DLLs from being found. os.add_dll_directory
+# fixes this by registering the path directly with the DLL loader.
+try:
+    import importlib.util as _ilu
+    _spec = _ilu.find_spec("onnxruntime")
+    if _spec and _spec.origin:
+        _ort_capi = os.path.join(os.path.dirname(_spec.origin), "capi")
+        if os.path.isdir(_ort_capi):
+            os.add_dll_directory(_ort_capi)
+except Exception:
+    pass
+
+import onnxruntime as ort
+
 logger = logging.getLogger(__name__)
 
-_AUTO_CONF_WINDOW = 30   # frames in rolling detection-count history
-_AUTO_CONF_STEP   = 0.005  # confidence nudge per adjustment
+
+def _build_session_options() -> Optional[ort.SessionOptions]:
+    """Create optimised ONNX session options."""
+    try:
+        session_options = ort.SessionOptions()
+        session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        session_options.enable_mem_pattern = True
+        session_options.enable_cpu_mem_arena = True
+        try:
+            session_options.intra_op_num_threads = 1
+            session_options.inter_op_num_threads = 1
+        except Exception as e:
+            logger.warning("ONNX thread param failed: %s", e)
+        try:
+            session_options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+            session_options.add_session_config_entry("session.inter_op.allow_spinning", "0")
+        except Exception as e:
+            logger.warning("ONNX allow_spinning failed: %s", e)
+        return session_options
+    except Exception as e:
+        logger.error("ONNX session options failed: %s", e)
+        return None
+
+
+def _preprocess_image(image: np.ndarray, model_input_size: int) -> np.ndarray:
+    """Preprocess image for ONNX model."""
+    # BGRA -> BGR
+    if image.ndim == 3 and image.shape[2] == 4:
+        image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+
+    # Resize with INTER_NEAREST for speed
+    if image.shape[0] != model_input_size or image.shape[1] != model_input_size:
+        image = cv2.resize(image, (model_input_size, model_input_size),
+                           interpolation=cv2.INTER_NEAREST)
+
+    blob = cv2.dnn.blobFromImage(
+        image,
+        scalefactor=1.0 / 255.0,
+        size=(model_input_size, model_input_size),
+        swapRB=True,
+        crop=False,
+    )
+    return np.ascontiguousarray(blob, dtype=np.float32)
+
+
+def _postprocess_outputs(outputs, original_width: int, original_height: int,
+                          model_input_size: int, min_confidence: float,
+                          offset_x: int = 0, offset_y: int = 0):
+    """Post-process ONNX model outputs."""
+    predictions = outputs[0][0].T
+
+    # Vectorised confidence filter
+    conf_mask = predictions[:, 4] >= min_confidence
+    filtered_predictions = predictions[conf_mask]
+
+    if len(filtered_predictions) == 0:
+        return [], []
+
+    scale_x = original_width / model_input_size
+    scale_y = original_height / model_input_size
+
+    cx = filtered_predictions[:, 0]
+    cy = filtered_predictions[:, 1]
+    w  = filtered_predictions[:, 2]
+    h  = filtered_predictions[:, 3]
+
+    x1 = (cx - w / 2) * scale_x + offset_x
+    y1 = (cy - h / 2) * scale_y + offset_y
+    x2 = (cx + w / 2) * scale_x + offset_x
+    y2 = (cy + h / 2) * scale_y + offset_y
+
+    boxes = np.stack([x1, y1, x2, y2], axis=1).tolist()
+    confidences = filtered_predictions[:, 4].tolist()
+
+    return boxes, confidences
+
+
+def _non_max_suppression(boxes, confidences, iou_threshold: float = 0.35):
+    """Non-maximum suppression."""
+    if len(boxes) == 0:
+        return [], []
+
+    boxes_arr = np.array(boxes)
+    confidences_arr = np.array(confidences)
+    areas = (boxes_arr[:, 2] - boxes_arr[:, 0]) * (boxes_arr[:, 3] - boxes_arr[:, 1])
+    order = confidences_arr.argsort()[::-1]
+
+    keep = []
+    while len(order) > 0:
+        i = order[0]
+        keep.append(i)
+        if len(order) == 1:
+            break
+
+        xx1 = np.maximum(boxes_arr[i, 0], boxes_arr[order[1:], 0])
+        yy1 = np.maximum(boxes_arr[i, 1], boxes_arr[order[1:], 1])
+        xx2 = np.minimum(boxes_arr[i, 2], boxes_arr[order[1:], 2])
+        yy2 = np.minimum(boxes_arr[i, 3], boxes_arr[order[1:], 3])
+
+        w = np.maximum(0, xx2 - xx1)
+        h = np.maximum(0, yy2 - yy1)
+        intersection = w * h
+        union = areas[i] + areas[order[1:]] - intersection
+        iou = intersection / np.maximum(union, 1e-6)
+
+        order = order[1:][iou <= iou_threshold]
+
+    return boxes_arr[keep].tolist(), confidences_arr[keep].tolist()
 
 
 class Detector:
     """
-    Wraps YOLOv8 for async person/humanoid detection.
-    Background subtraction pre-filters static pixels to reduce false positives.
-    Auto-confidence tuning adjusts the threshold toward a target detection count.
+    Wraps an ONNX model for async humanoid/character detection.
+    Uses DmlExecutionProvider (DirectML — any DirectX 12 GPU) with CPU fallback.
     """
 
     def __init__(self, config: dict):
         det_cfg = config["detection"]
-        self._model_path: str = det_cfg.get("model", "models/yolov8n.pt")
-        self._confidence: float = det_cfg.get("confidence", 0.45)
-        self._nms_iou: float = det_cfg.get("nms_iou", 0.45)
-        self._use_bg_sub: bool = det_cfg.get("use_background_subtraction", True)
-        self._device: str = det_cfg.get("device", "cuda")
-        self._detect_all_classes: bool = det_cfg.get("detect_all_classes", False)
+        self._model_path: str = det_cfg.get("model", "models/Roblox.onnx")
+        self._confidence: float = det_cfg.get("confidence", 0.35)
+        self._nms_iou: float = det_cfg.get("nms_iou", 0.35)
 
-        # Auto-confidence
-        self._auto_conf: bool = det_cfg.get("auto_confidence", False)
-        self._auto_conf_min: float = det_cfg.get("auto_conf_min", 0.08)
-        self._auto_conf_max: float = det_cfg.get("auto_conf_max", 0.60)
-        self._auto_conf_target: int = det_cfg.get("auto_conf_target", 3)
-        self._conf_history: deque = deque(maxlen=_AUTO_CONF_WINDOW)
+        self._session: Optional[ort.InferenceSession] = None
+        self._input_name: Optional[str] = None
+        self._model_input_size: int = 640
 
-        self._model = None
-        self._bg_subtractor = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="InferenceWorker")
         self._pending_future: Optional[Future] = None
         self._last_detections: Optional[List[dict]] = None
@@ -55,70 +164,36 @@ class Detector:
         self._fps_lock = threading.Lock()
         self._reload_requested: bool = False
 
-        self._morph_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def _resolve_device(self, requested: str):
-        """Resolve a device string to a torch-compatible device object."""
-        import torch
-        if requested == "cuda":
-            if torch.cuda.is_available():
-                return "cuda"
-            logger.warning("CUDA requested but not available, falling back to CPU.")
-            return "cpu"
-        if requested == "directml":
-            try:
-                import torch_directml
-                dml = torch_directml.device()
-                logger.info("DirectML initialised — AMD/Intel GPU acceleration active.")
-                return dml
-            except ImportError:
-                logger.warning(
-                    "torch-directml not installed, falling back to CPU. "
-                    "Run: pip install torch-directml"
-                )
-                return "cpu"
-        return "cpu"
-
     def load(self) -> None:
-        """Load the YOLO model. Call once from inference thread before loop."""
-        from ultralytics import YOLO
-
-        self._device = self._resolve_device(self._device)
-
-        logger.info("Loading YOLO model '%s' on device '%s'.", self._model_path, self._device)
-        self._model = YOLO(self._model_path)
-        self._model.to(self._device)
-
-        if self._use_bg_sub:
-            self._bg_subtractor = cv2.createBackgroundSubtractorMOG2(
-                history=200, varThreshold=50, detectShadows=False
+        """Load the ONNX model. Call once from inference thread before loop."""
+        logger.info("Loading ONNX model '%s'.", self._model_path)
+        session_options = _build_session_options()
+        providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
+        if session_options is not None:
+            self._session = ort.InferenceSession(
+                self._model_path, providers=providers, sess_opts=session_options
             )
-        logger.info("Detector ready.")
+        else:
+            self._session = ort.InferenceSession(self._model_path, providers=providers)
+        self._input_name = self._session.get_inputs()[0].name
+        self._model_input_size = self._session.get_inputs()[0].shape[2]
+        logger.info(
+            "Detector ready. Provider=%s  input_size=%d",
+            self._session.get_providers(),
+            self._model_input_size,
+        )
 
     def set_confidence(self, value: float) -> None:
         self._confidence = max(0.05, min(0.95, float(value)))
-
-    def set_auto_confidence(self, enabled: bool) -> None:
-        self._auto_conf = enabled
-        if not enabled:
-            self._conf_history.clear()
-
-    def set_auto_conf_params(self, min_val: float, max_val: float, target: int) -> None:
-        self._auto_conf_min = min_val
-        self._auto_conf_max = max_val
-        self._auto_conf_target = max(1, target)
 
     def reload_model(self, new_path: str) -> None:
         logger.info("Model swap requested: %s → %s", self._model_path, new_path)
         self._model_path = new_path
         self._reload_requested = True
-
-    def set_detect_all_classes(self, value: bool) -> None:
-        self._detect_all_classes = value
 
     @property
     def current_confidence(self) -> float:
@@ -155,33 +230,6 @@ class Detector:
     # Internal
     # ------------------------------------------------------------------
 
-    def _apply_bg_subtraction(self, frame: np.ndarray) -> np.ndarray:
-        fg_mask = self._bg_subtractor.apply(frame)
-        fg_mask = cv2.dilate(fg_mask, self._morph_kernel, iterations=2)
-        result = frame.copy()
-        result[fg_mask == 0] = 0
-        return result
-
-    def _adjust_confidence(self, detection_count: int) -> None:
-        """Nudge confidence toward the target detection count."""
-        self._conf_history.append(detection_count)
-        if len(self._conf_history) < _AUTO_CONF_WINDOW // 2:
-            return  # Not enough history yet
-
-        avg = sum(self._conf_history) / len(self._conf_history)
-        if avg > self._auto_conf_target + 1:
-            # Too many detections → raise confidence (be more selective)
-            self._confidence = min(
-                self._auto_conf_max,
-                self._confidence + _AUTO_CONF_STEP,
-            )
-        elif avg < self._auto_conf_target - 0.5:
-            # Too few detections → lower confidence (be more permissive)
-            self._confidence = max(
-                self._auto_conf_min,
-                self._confidence - _AUTO_CONF_STEP,
-            )
-
     def _infer(self, frame: np.ndarray) -> List[dict]:
         import time
 
@@ -191,51 +239,45 @@ class Detector:
         if self._reload_requested:
             self._reload_requested = False
             try:
-                from ultralytics import YOLO
-                logger.info("Loading model '%s'...", self._model_path)
-                self._model = YOLO(self._model_path)
-                self._model.to(self._device)
+                logger.info("Hot-swapping model '%s'...", self._model_path)
+                session_options = _build_session_options()
+                providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
+                if session_options is not None:
+                    self._session = ort.InferenceSession(
+                        self._model_path, providers=providers, sess_opts=session_options
+                    )
+                else:
+                    self._session = ort.InferenceSession(self._model_path, providers=providers)
+                self._input_name = self._session.get_inputs()[0].name
+                self._model_input_size = self._session.get_inputs()[0].shape[2]
                 logger.info("Model loaded: %s", self._model_path)
             except Exception as exc:
                 logger.error("Model reload failed: %s", exc, exc_info=True)
-                self._model = None
+                self._session = None
 
-        if self._model is None:
+        if self._session is None:
             return []
 
-        infer_frame = frame
-        if self._use_bg_sub and self._bg_subtractor is not None:
-            infer_frame = self._apply_bg_subtraction(frame)
+        input_tensor = _preprocess_image(frame, self._model_input_size)
+        outputs = self._session.run(None, {self._input_name: input_tensor})
 
-        cls_filter = None if self._detect_all_classes else [0]
-        results = self._model(
-            infer_frame,
-            conf=self._confidence,
-            iou=self._nms_iou,
-            verbose=False,
-            classes=cls_filter,
+        h, w = frame.shape[:2]
+        boxes, confidences = _postprocess_outputs(
+            outputs, w, h, self._model_input_size, self._confidence
         )
+        boxes, confidences = _non_max_suppression(boxes, confidences, self._nms_iou)
 
         detections = []
-        for result in results:
-            if result.boxes is None:
-                continue
-            for box in result.boxes:
-                x1, y1, x2, y2 = box.xyxy[0].tolist()
-                conf = float(box.conf[0])
-                cls_id = int(box.cls[0])
-                detections.append({
-                    "bbox": [int(x1), int(y1), int(x2), int(y2)],
-                    "confidence": conf,
-                    "class_id": cls_id,
-                })
+        for box, conf in zip(boxes, confidences):
+            detections.append({
+                "bbox": [int(box[0]), int(box[1]), int(box[2]), int(box[3])],
+                "confidence": float(conf),
+                "class_id": 0,  # Roblox.onnx is single-class
+            })
 
         elapsed = time.perf_counter() - t0
         if elapsed > 0:
             with self._fps_lock:
                 self._inference_fps = 1.0 / elapsed
-
-        if self._auto_conf:
-            self._adjust_confidence(len(detections))
 
         return detections

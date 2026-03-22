@@ -2,16 +2,17 @@
 cursor.py — Mouse lock logic using Win32 SendInput.
 
 Modes:
-  Normal  — cursor visible, moves on screen. Proportional movement toward target.
+  Normal  — cursor visible, moves on screen. PID-controlled movement toward target.
   FPS     — mouse controls camera. Low-gain proportional (factor=0.12*speed) with
-            no velocity prediction, preventing oscillation from camera feedback.
+            SmartTracker prediction, preventing oscillation from camera feedback.
 
 Features:
-  Smoothing curves  — "linear" (default), "exponential" (ease-in), "bezier" (S-curve)
+  PID control       — smooth, overshoot-free movement via PIDController
+  SmartTracker      — velocity prediction with direction-change aware smoothing
   Snap-back         — detects unexpected cursor movement (user input) and pauses lock
   Triggerbot        — auto-clicks when cursor is inside a detected bbox
-  Recoil comp.      — steps through a configurable pattern while fire key is held
   Depth preference  — optionally prefer the target with the largest bbox (closest)
+  Sticky lock       — keeps locked target across frames with grace period
 
 Hotkeys:
   lock_toggle (F7) — toggle lock on/off
@@ -26,6 +27,9 @@ import random
 import threading
 import time
 from typing import List, Optional, Tuple
+
+from pid_controller import PIDController
+from smart_tracker import SmartTracker
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +123,6 @@ _LOCK_GRACE_FRAMES = 8
 class CursorFollower:
     def __init__(self, config: dict, get_tracks_fn, screen_size: Tuple[int, int]):
         self._cfg          = config["cursor_follow"]
-        self._recoil_cfg   = config.get("recoil", {})
         self._tb_cfg       = config.get("triggerbot", {})
         self._hotkeys_cfg  = config.get("hotkeys", {})
         self._get_tracks   = get_tracks_fn
@@ -133,6 +136,7 @@ class CursorFollower:
 
         self._locked_target_id: Optional[int] = None
         self._lock_lost_frames: int = 0
+        self._lock_start_time: float = 0.0
         self._hold_was_pressed: bool = False
 
         # Hotkey handler references
@@ -148,13 +152,32 @@ class CursorFollower:
         self._expected_cursor: Optional[Tuple[int, int]] = None
         self._snapback_until: float = 0.0
 
-        # Recoil state
-        self._recoil_idx: int = 0
-        self._recoil_last_step_t: float = 0.0
-
         # Triggerbot state
         self._tb_enabled: bool = self._tb_cfg.get("enabled", False)
         self._tb_last_click_t: float = 0.0
+
+        # PID controllers
+        pid_cfg = self._cfg.get("pid", {})
+        self._pid_x = PIDController(
+            Kp=pid_cfg.get("kp", 0.4),
+            Ki=pid_cfg.get("ki", 0.0),
+            Kd=pid_cfg.get("kd", 0.08),
+        )
+        self._pid_y = PIDController(
+            Kp=pid_cfg.get("kp", 0.4),
+            Ki=pid_cfg.get("ki", 0.0),
+            Kd=pid_cfg.get("kd", 0.08),
+        )
+
+        # SmartTracker
+        tracker_cfg = self._cfg.get("tracker", {})
+        self._smart_tracker = SmartTracker(
+            smoothing_factor=tracker_cfg.get("smoothing_factor", 0.5),
+            stop_threshold=tracker_cfg.get("stop_threshold", 20.0),
+            position_deadzone=tracker_cfg.get("position_deadzone", 4.0),
+        )
+        self._last_track_time: float = 0.0
+        self._last_locked_target_id: Optional[int] = None
 
         # Public state
         self.active_target_id: Optional[int] = None
@@ -206,9 +229,6 @@ class CursorFollower:
             self._hotkeys_cfg[key] = value
             self._reinstall_hotkeys()
 
-    def update_recoil(self, key: str, value) -> None:
-        self._recoil_cfg[key] = value
-
     def update_triggerbot(self, key: str, value) -> None:
         self._tb_cfg[key] = value
         if key == "enabled":
@@ -219,6 +239,11 @@ class CursorFollower:
     def _reset_lock(self) -> None:
         self._locked_target_id = None
         self._lock_lost_frames = 0
+        self._lock_start_time = 0.0
+        self._pid_x.reset()
+        self._pid_y.reset()
+        self._smart_tracker.reset()
+        self._last_locked_target_id = None
 
     # ------------------------------------------------------------------
     # Hotkeys
@@ -304,14 +329,11 @@ class CursorFollower:
             self._reset_lock()
 
         rx, ry = self._ref_point()
-        radius        = self._cfg.get("follow_radius", 150)
-        target_class  = self._cfg.get("target_class")
-        prefer_depth  = self._cfg.get("prefer_closest_depth", False)
+        radius       = self._cfg.get("follow_radius", 150)
+        prefer_depth = self._cfg.get("prefer_closest_depth", False)
 
         candidates: List[Tuple[float, dict]] = []
         for t in tracks:
-            if target_class is not None and t.get("class_id") != target_class:
-                continue
             tx, ty = t["center"]
             dist = math.sqrt((tx - rx) ** 2 + (ty - ry) ** 2)
             if dist <= radius:
@@ -327,6 +349,7 @@ class CursorFollower:
 
         self._locked_target_id = best["id"]
         self._lock_lost_frames = 0
+        self._lock_start_time = time.perf_counter()
         return best
 
     # ------------------------------------------------------------------
@@ -338,26 +361,44 @@ class CursorFollower:
         h  = y2 - y1
         cx = (x1 + x2) / 2
         pt = self._cfg.get("follow_point", "chest")
+        head_ratio = self._cfg.get("head_height_ratio", 0.15)
         if pt == "head":
-            return cx, y1 + h * 0.15
+            return cx, y1 + h * head_ratio
         elif pt == "chest":
-            return cx, y1 + h * 0.35
+            return cx, y1 + h * (head_ratio + 0.20)
         else:
             return cx, (y1 + y2) / 2
 
     def _predict_position(
-        self, pos: Tuple[float, float], velocity: Tuple[float, float]
+        self, target_x: float, target_y: float, target_id: int
     ) -> Tuple[float, float]:
+        """Use SmartTracker for position prediction with velocity estimation."""
+        now = time.perf_counter()
+
+        # Reset SmartTracker if target changed
+        if target_id != self._last_locked_target_id:
+            self._smart_tracker.reset()
+            self._last_locked_target_id = target_id
+            self._last_track_time = now
+
+        dt = now - self._last_track_time if self._last_track_time > 0 else 0.0
+        self._last_track_time = now
+
+        self._smart_tracker.update(target_x, target_y, dt)
+
         if self._cfg.get("fps_mode", False):
-            return pos
+            return target_x, target_y
+
         prediction_ms = self._cfg.get("prediction_ms", 60)
-        scale = prediction_ms / max(self.frame_time_ms, 1.0)
-        px = max(0.0, min(float(self._screen_w), pos[0] + velocity[0] * scale))
-        py = max(0.0, min(float(self._screen_h), pos[1] + velocity[1] * scale))
-        return px, py
+        pred_x, pred_y = self._smart_tracker.get_predicted_position(prediction_ms / 1000.0)
+
+        # Clamp to screen bounds
+        pred_x = max(0.0, min(float(self._screen_w), pred_x))
+        pred_y = max(0.0, min(float(self._screen_h), pred_y))
+        return pred_x, pred_y
 
     # ------------------------------------------------------------------
-    # Movement computation (smoothing curves)
+    # Movement computation (PID)
     # ------------------------------------------------------------------
 
     def _compute_movement(
@@ -373,27 +414,16 @@ class CursorFollower:
             factor = 0.12 * speed
             return dx * factor, dy * factor
 
-        smoothing = self._cfg.get("smoothing", 0.12)
-        base_factor = (1.0 - smoothing) * speed
-        curve = self._cfg.get("smoothing_curve", "linear")
+        move_x = self._pid_x.update(dx) * speed
+        move_y = self._pid_y.update(dy) * speed
 
-        if curve == "exponential":
-            # Ease-in: scales down near target, full speed far away.
-            # Prevents overshooting and small oscillations near the target.
-            normalized = min(1.0, dist / 400.0)
-            factor = base_factor * (0.3 + 0.7 * normalized)
-
-        elif curve == "bezier":
-            # Smoothstep S-curve: gentle at extremes, fastest at mid-distance.
-            t = min(1.0, dist / 400.0)
-            smooth_t = t * t * (3.0 - 2.0 * t)
-            factor = base_factor * (0.1 + 0.9 * smooth_t)
-
-        else:  # linear
-            factor = base_factor
-
-        move_x = dx * factor
-        move_y = dy * factor
+        # aim_y_reduce: after locking for N seconds, suppress Y correction.
+        # Prevents the cursor from drifting down while tracking a stationary target.
+        if (self._cfg.get("aim_y_reduce", False)
+                and self._lock_start_time > 0):
+            delay = self._cfg.get("aim_y_reduce_delay", 0.6)
+            if time.perf_counter() - self._lock_start_time > delay:
+                move_y = 0.0
 
         # Guarantee at least 1px movement if there's meaningful delta
         if abs(dx) > 0.5 and abs(move_x) < 1.0:
@@ -402,45 +432,6 @@ class CursorFollower:
             move_y = math.copysign(1.0, dy)
 
         return move_x, move_y
-
-    # ------------------------------------------------------------------
-    # Recoil compensation
-    # ------------------------------------------------------------------
-
-    def _is_fire_key_down(self) -> bool:
-        fire_key = self._recoil_cfg.get("fire_key", "left")
-        if fire_key == "left":
-            return _is_vk_down(_VK_LBUTTON)
-        elif fire_key == "right":
-            return _is_vk_down(_VK_RBUTTON)
-        else:
-            try:
-                import keyboard
-                return keyboard.is_pressed(fire_key)
-            except Exception:
-                return False
-
-    def _handle_recoil(self) -> None:
-        if not self._recoil_cfg.get("enabled", False):
-            return
-
-        pattern  = self._recoil_cfg.get("pattern", [])
-        step_ms  = self._recoil_cfg.get("step_ms", 80)
-        reset_ms = self._recoil_cfg.get("reset_ms", 600)
-
-        if not pattern:
-            return
-
-        now = time.perf_counter()
-        if self._is_fire_key_down():
-            if now - self._recoil_last_step_t >= step_ms / 1000.0:
-                step = pattern[self._recoil_idx % len(pattern)]
-                _send_mouse_move(int(step[0]), int(step[1]))
-                self._recoil_idx += 1
-                self._recoil_last_step_t = now
-        else:
-            if now - self._recoil_last_step_t > reset_ms / 1000.0:
-                self._recoil_idx = 0
 
     # ------------------------------------------------------------------
     # Triggerbot
@@ -503,9 +494,6 @@ class CursorFollower:
         while not self._stop_event.is_set():
             t0 = time.perf_counter()
 
-            # Recoil runs regardless of lock state
-            self._handle_recoil()
-
             active = self._toggle_enabled.is_set() or self._hold_active.is_set()
             if not active:
                 self.follow_active    = False
@@ -544,24 +532,36 @@ class CursorFollower:
             target = self._select_target(tracks)
             if target is None:
                 self.active_target_id = None
+                # On target loss: reset PID and SmartTracker
+                self._pid_x.reset()
+                self._pid_y.reset()
+                self._smart_tracker.reset()
                 self._sleep_remaining(interval, t0)
                 continue
 
             self.active_target_id = target["id"]
 
-            fp        = self._compute_follow_point(target)
-            predicted = self._predict_position(fp, target["velocity"])
+            fp = self._compute_follow_point(target)
+            predicted = self._predict_position(fp[0], fp[1], target["id"])
 
             rx, ry = self._ref_point()
             dx = predicted[0] - rx
             dy = predicted[1] - ry
-            dist = math.sqrt(dx * dx + dy * dy)
 
-            deadzone = self._cfg.get("deadzone", 5) if fps_mode else 0
-            if dist <= deadzone:
+            # Use SmartTracker deadzone check
+            if self._smart_tracker.is_in_deadzone(predicted[0], predicted[1], rx, ry):
                 self._sleep_remaining(interval, t0)
                 continue
 
+            # FPS mode: also check simple deadzone
+            if fps_mode:
+                dist = math.sqrt(dx * dx + dy * dy)
+                deadzone = self._cfg.get("deadzone", 5)
+                if dist <= deadzone:
+                    self._sleep_remaining(interval, t0)
+                    continue
+
+            dist = math.sqrt(dx * dx + dy * dy)
             move_x, move_y = self._compute_movement(dx, dy, dist, fps_mode)
 
             # Record expected cursor position before sending move (snapback detection)

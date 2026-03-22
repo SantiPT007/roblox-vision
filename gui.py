@@ -64,7 +64,9 @@ class ControlPanel(QWidget):
         self._toggle_perf = toggle_perf_dashboard_fn
 
         self.setWindowTitle("Character Tracker — Control Panel")
-        self.setMinimumWidth(430)
+        self.setMinimumWidth(560)
+        self.setMinimumHeight(480)
+        self.resize(580, 860)
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
 
         self._build_ui()
@@ -91,7 +93,6 @@ class ControlPanel(QWidget):
         root.addWidget(self._build_detection_group())
         root.addWidget(self._build_lock_group())
         root.addWidget(self._build_triggerbot_group())
-        root.addWidget(self._build_recoil_group())
         root.addWidget(self._build_hotkeys_group())
         root.addWidget(self._build_overlay_group())
         root.addWidget(self._build_profiles_group())
@@ -123,6 +124,7 @@ class ControlPanel(QWidget):
     def _build_capture_group(self) -> QGroupBox:
         grp = QGroupBox("Capture")
         form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         row = QHBoxLayout()
         self._window_combo = QComboBox()
@@ -156,8 +158,9 @@ class ControlPanel(QWidget):
     def _build_detection_group(self) -> QGroupBox:
         grp = QGroupBox("Detection")
         form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
-        # Model selector
+        # Model selector (.onnx files only)
         model_row = QHBoxLayout()
         self._model_combo = QComboBox()
         self._model_combo.setEditable(False)
@@ -175,7 +178,7 @@ class ControlPanel(QWidget):
 
         # Confidence
         self._conf_label = QLabel()
-        conf_val = self._config.get("detection", {}).get("confidence", 0.45)
+        conf_val = self._config.get("detection", {}).get("confidence", 0.35)
         conf_slider = QSlider(Qt.Orientation.Horizontal)
         conf_slider.setRange(5, 90)
         conf_slider.setValue(int(conf_val * 100))
@@ -186,80 +189,6 @@ class ControlPanel(QWidget):
         conf_row.addWidget(self._conf_label)
         form.addRow("Confidence:", conf_row)
 
-        # Device
-        device_combo = QComboBox()
-        device_combo.addItems(["cuda", "directml", "cpu"])
-        device_combo.setCurrentText(self._config.get("detection", {}).get("device", "cuda"))
-        device_combo.currentTextChanged.connect(
-            lambda v: self._on_change("detection", "device", v)
-        )
-        form.addRow("Device:", device_combo)
-
-        # BG subtraction
-        bg_chk = QCheckBox()
-        bg_chk.setChecked(
-            self._config.get("detection", {}).get("use_background_subtraction", False)
-        )
-        bg_chk.toggled.connect(
-            lambda v: self._on_change("detection", "use_background_subtraction", v)
-        )
-        form.addRow("BG subtraction:", bg_chk)
-
-        # All classes
-        all_cls_chk = QCheckBox("All classes  (enable for custom models)")
-        all_cls_chk.setChecked(
-            self._config.get("detection", {}).get("detect_all_classes", False)
-        )
-        all_cls_chk.toggled.connect(
-            lambda v: self._on_change("detection", "detect_all_classes", v)
-        )
-        form.addRow("", all_cls_chk)
-
-        # Team detection — experimental
-        team_chk = QCheckBox(
-            "Team color detection  (experimental — may misread in some scenes)"
-        )
-        team_chk.setChecked(self._config.get("detection", {}).get("team_detection", False))
-        team_chk.toggled.connect(
-            lambda v: self._on_change("detection", "team_detection", v)
-        )
-        form.addRow("", team_chk)
-
-        # Auto-confidence
-        auto_chk = QCheckBox(
-            "Auto-confidence  — keeps detection count near your target automatically"
-        )
-        auto_chk.setChecked(self._config.get("detection", {}).get("auto_confidence", False))
-        auto_chk.toggled.connect(
-            lambda v: self._on_change("detection", "auto_confidence", v)
-        )
-        form.addRow("", auto_chk)
-
-        det = self._config.get("detection", {})
-
-        # Target count (the one number you actually care about)
-        target_spin = QSpinBox()
-        target_spin.setRange(1, 20)
-        target_spin.setValue(det.get("auto_conf_target", 3))
-        target_spin.setToolTip(
-            "How many characters you want detected per frame.\n"
-            "If you're getting too many detections → raise this.\n"
-            "If you're missing real characters → lower this."
-        )
-        target_spin.valueChanged.connect(
-            lambda v: self._on_change("detection", "auto_conf_target", v)
-        )
-        form.addRow("  Target detections:", target_spin)
-
-        # Min/max confidence bounds
-        bounds_note = QLabel(
-            f"  Allowed range: {int(det.get('auto_conf_min', 0.08)*100)}% – "
-            f"{int(det.get('auto_conf_max', 0.60)*100)}%  "
-            f"(edit in config.yaml to change bounds)"
-        )
-        bounds_note.setStyleSheet("color: gray; font-size: 10px;")
-        form.addRow("", bounds_note)
-
         return grp
 
     # ------------------------------------------------------------------
@@ -269,6 +198,7 @@ class ControlPanel(QWidget):
     def _build_lock_group(self) -> QGroupBox:
         grp = QGroupBox("Mouse Lock")
         form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         cf = self._config.get("cursor_follow", {})
 
         fps_chk = QCheckBox("FPS mode  (camera-controlled — low-gain, no prediction, deadzone)")
@@ -298,20 +228,6 @@ class ControlPanel(QWidget):
         smooth_row.addWidget(self._smooth_slider, 1)
         smooth_row.addWidget(self._smooth_label)
         form.addRow("Smoothing:", smooth_row)
-
-        # Curve
-        self._curve_combo = QComboBox()
-        self._curve_combo.addItems(["linear", "exponential", "bezier"])
-        self._curve_combo.setCurrentText(cf.get("smoothing_curve", "linear"))
-        self._curve_combo.setToolTip(
-            "linear — constant rate\n"
-            "exponential — slower near target, faster far away\n"
-            "bezier — S-curve: gentle at extremes, fastest at mid-distance"
-        )
-        self._curve_combo.currentTextChanged.connect(
-            lambda v: self._on_change("cursor_follow", "smoothing_curve", v)
-        )
-        form.addRow("Curve:", self._curve_combo)
 
         # Speed
         self._speed_label = QLabel()
@@ -368,14 +284,6 @@ class ControlPanel(QWidget):
         )
         form.addRow("Deadzone (FPS):", self._dz_spin)
 
-        # Enemies only
-        enemy_chk = QCheckBox("Enemies only  (class 1 — rivals.pt)")
-        enemy_chk.setChecked(cf.get("target_class") == 1)
-        enemy_chk.toggled.connect(
-            lambda v: self._on_change("cursor_follow", "target_class", 1 if v else None)
-        )
-        form.addRow("", enemy_chk)
-
         # Depth preference
         depth_chk = QCheckBox("Prefer closest target  (largest bounding box = nearest)")
         depth_chk.setChecked(cf.get("prefer_closest_depth", False))
@@ -383,6 +291,33 @@ class ControlPanel(QWidget):
             lambda v: self._on_change("cursor_follow", "prefer_closest_depth", v)
         )
         form.addRow("", depth_chk)
+
+        # Head height ratio
+        hhr_spin = QSpinBox()
+        hhr_spin.setRange(5, 50)
+        hhr_spin.setSuffix(" %")
+        hhr_spin.setValue(int(cf.get("head_height_ratio", 0.15) * 100))
+        hhr_spin.setToolTip("How far down the bounding box the head aim point sits (5% = very top, 25% = upper quarter)")
+        hhr_spin.valueChanged.connect(
+            lambda v: self._on_change("cursor_follow", "head_height_ratio", v / 100.0)
+        )
+        form.addRow("Head aim offset:", hhr_spin)
+
+        # aim_y_reduce
+        ayr_chk = QCheckBox("Suppress Y after lock  (stops downward drift on stationary targets)")
+        ayr_chk.setChecked(cf.get("aim_y_reduce", False))
+        ayr_chk.toggled.connect(lambda v: self._on_change("cursor_follow", "aim_y_reduce", v))
+        form.addRow("", ayr_chk)
+
+        ayr_delay_spin = QSpinBox()
+        ayr_delay_spin.setRange(100, 3000)
+        ayr_delay_spin.setSuffix(" ms")
+        ayr_delay_spin.setValue(int(cf.get("aim_y_reduce_delay", 0.6) * 1000))
+        ayr_delay_spin.setToolTip("How long after acquiring a lock before Y correction is suppressed")
+        ayr_delay_spin.valueChanged.connect(
+            lambda v: self._on_change("cursor_follow", "aim_y_reduce_delay", v / 1000.0)
+        )
+        form.addRow("Y reduce delay:", ayr_delay_spin)
 
         # Snap-back
         sb_thresh_spin = QSpinBox()
@@ -417,6 +352,7 @@ class ControlPanel(QWidget):
     def _build_triggerbot_group(self) -> QGroupBox:
         grp = QGroupBox("Triggerbot")
         form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         tb = self._config.get("triggerbot", {})
 
         enabled_chk = QCheckBox("Enable triggerbot")
@@ -462,69 +398,13 @@ class ControlPanel(QWidget):
         return grp
 
     # ------------------------------------------------------------------
-    # Recoil
-    # ------------------------------------------------------------------
-
-    def _build_recoil_group(self) -> QGroupBox:
-        grp = QGroupBox("Recoil Compensation")
-        form = QFormLayout(grp)
-        rc = self._config.get("recoil", {})
-
-        enabled_chk = QCheckBox("Enable recoil compensation")
-        enabled_chk.setChecked(rc.get("enabled", False))
-        enabled_chk.toggled.connect(lambda v: self._on_change("recoil", "enabled", v))
-        form.addRow("", enabled_chk)
-
-        # Recoil pattern preset
-        rc_presets = self._config.get("recoil_presets", {})
-        if rc_presets:
-            rp_combo = QComboBox()
-            rp_combo.addItem("— pattern preset —")
-            for name in rc_presets:
-                rp_combo.addItem(name)
-            rp_combo.currentTextChanged.connect(self._on_recoil_preset_selected)
-            form.addRow("Pattern preset:", rp_combo)
-
-        fire_key_edit = QLineEdit(rc.get("fire_key", "left"))
-        fire_key_edit.setMaximumWidth(80)
-        fire_key_edit.setToolTip('"left" = LMB  |  "right" = RMB  |  keyboard key e.g. "z"')
-        fire_key_edit.textChanged.connect(lambda v: self._on_change("recoil", "fire_key", v))
-        form.addRow("Fire key:", fire_key_edit)
-
-        self._recoil_step_spin = QSpinBox()
-        self._recoil_step_spin.setRange(10, 500)
-        self._recoil_step_spin.setSuffix(" ms")
-        self._recoil_step_spin.setValue(rc.get("step_ms", 80))
-        self._recoil_step_spin.setToolTip(
-            "Time between pattern steps — lower = faster-firing weapon.\n"
-            "Match this to your weapon's fire rate for best results."
-        )
-        self._recoil_step_spin.valueChanged.connect(
-            lambda v: self._on_change("recoil", "step_ms", v)
-        )
-        form.addRow("Step interval:", self._recoil_step_spin)
-
-        reset_spin = QSpinBox()
-        reset_spin.setRange(100, 3000)
-        reset_spin.setSuffix(" ms")
-        reset_spin.setValue(rc.get("reset_ms", 600))
-        reset_spin.setToolTip("How long after you stop firing before the pattern resets to step 1")
-        reset_spin.valueChanged.connect(lambda v: self._on_change("recoil", "reset_ms", v))
-        form.addRow("Reset after:", reset_spin)
-
-        note = QLabel("Recoil pattern (dx/dy values) is edited in config.yaml")
-        note.setStyleSheet("color: gray; font-size: 10px;")
-        form.addRow("", note)
-
-        return grp
-
-    # ------------------------------------------------------------------
     # Hotkeys
     # ------------------------------------------------------------------
 
     def _build_hotkeys_group(self) -> QGroupBox:
         grp = QGroupBox("Hotkeys")
         form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         hk = self._config.get("hotkeys", {})
 
         fields = [
@@ -577,6 +457,7 @@ class ControlPanel(QWidget):
     def _build_profiles_group(self) -> QGroupBox:
         grp = QGroupBox("Saved Profiles  (save/load full config snapshots)")
         form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         self._profile_combo = QComboBox()
         self._populate_profiles()
@@ -615,64 +496,6 @@ class ControlPanel(QWidget):
             lambda v: self._on_change("cursor_follow", "enabled", v)
         )
         return self._follow_btn
-
-    # ------------------------------------------------------------------
-    # Config preset callbacks
-    # ------------------------------------------------------------------
-
-    def _on_recoil_preset_selected(self, name: str) -> None:
-        if name.startswith("—"):
-            return
-        presets = self._config.get("recoil_presets", {})
-        preset = presets.get(name)
-        if not preset:
-            return
-        for key, value in preset.items():
-            self._on_change("recoil", key, value)
-        if "step_ms" in preset:
-            self._recoil_step_spin.blockSignals(True)
-            self._recoil_step_spin.setValue(preset["step_ms"])
-            self._recoil_step_spin.blockSignals(False)
-        self._status_bar.showMessage(f"Recoil preset '{name}' applied.", 3000)
-
-    def _sync_key_widgets(self) -> None:
-        """Update the main slider/combo widgets to reflect current config values."""
-        cf = self._config.get("cursor_follow", {})
-        rc = self._config.get("recoil", {})
-
-        sv = cf.get("smoothing", 0.12)
-        self._smooth_slider.blockSignals(True)
-        self._smooth_slider.setValue(int(sv * 100))
-        self._smooth_label.setText(f"{sv:.2f}")
-        self._smooth_slider.blockSignals(False)
-
-        spv = cf.get("speed", 1.0)
-        self._speed_slider.blockSignals(True)
-        self._speed_slider.setValue(int(spv * 100))
-        self._speed_label.setText(f"{spv:.2f}x")
-        self._speed_slider.blockSignals(False)
-
-        rv = cf.get("follow_radius", 150)
-        self._radius_slider.blockSignals(True)
-        self._radius_slider.setValue(rv)
-        self._radius_label.setText(f"{rv}px")
-        self._radius_slider.blockSignals(False)
-
-        self._fp_combo.blockSignals(True)
-        self._fp_combo.setCurrentText(cf.get("follow_point", "chest"))
-        self._fp_combo.blockSignals(False)
-
-        self._pred_spin.blockSignals(True)
-        self._pred_spin.setValue(cf.get("prediction_ms", 60))
-        self._pred_spin.blockSignals(False)
-
-        self._curve_combo.blockSignals(True)
-        self._curve_combo.setCurrentText(cf.get("smoothing_curve", "linear"))
-        self._curve_combo.blockSignals(False)
-
-        self._recoil_step_spin.blockSignals(True)
-        self._recoil_step_spin.setValue(rc.get("step_ms", 80))
-        self._recoil_step_spin.blockSignals(False)
 
     # ------------------------------------------------------------------
     # Aimlock preset
@@ -714,10 +537,36 @@ class ControlPanel(QWidget):
                 self._dz_spin.blockSignals(True)
                 self._dz_spin.setValue(value)
                 self._dz_spin.blockSignals(False)
-            elif key == "smoothing_curve":
-                self._curve_combo.blockSignals(True)
-                self._curve_combo.setCurrentText(value)
-                self._curve_combo.blockSignals(False)
+
+    def _sync_key_widgets(self) -> None:
+        """Update the main slider/combo widgets to reflect current config values."""
+        cf = self._config.get("cursor_follow", {})
+
+        sv = cf.get("smoothing", 0.12)
+        self._smooth_slider.blockSignals(True)
+        self._smooth_slider.setValue(int(sv * 100))
+        self._smooth_label.setText(f"{sv:.2f}")
+        self._smooth_slider.blockSignals(False)
+
+        spv = cf.get("speed", 1.0)
+        self._speed_slider.blockSignals(True)
+        self._speed_slider.setValue(int(spv * 100))
+        self._speed_label.setText(f"{spv:.2f}x")
+        self._speed_slider.blockSignals(False)
+
+        rv = cf.get("follow_radius", 150)
+        self._radius_slider.blockSignals(True)
+        self._radius_slider.setValue(rv)
+        self._radius_label.setText(f"{rv}px")
+        self._radius_slider.blockSignals(False)
+
+        self._fp_combo.blockSignals(True)
+        self._fp_combo.setCurrentText(cf.get("follow_point", "chest"))
+        self._fp_combo.blockSignals(False)
+
+        self._pred_spin.blockSignals(True)
+        self._pred_spin.setValue(cf.get("prediction_ms", 60))
+        self._pred_spin.blockSignals(False)
 
     # ------------------------------------------------------------------
     # Profile callbacks
@@ -801,8 +650,8 @@ class ControlPanel(QWidget):
         self._model_combo.clear()
         models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
         if os.path.isdir(models_dir):
-            pts = sorted(f for f in os.listdir(models_dir) if f.endswith(".pt"))
-            self._model_combo.addItems(pts)
+            onnx_files = sorted(f for f in os.listdir(models_dir) if f.endswith(".onnx"))
+            self._model_combo.addItems(onnx_files)
         if current:
             self._model_combo.setCurrentText(current)
         self._model_combo.blockSignals(False)

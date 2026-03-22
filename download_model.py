@@ -1,5 +1,5 @@
 """
-download_model.py — Downloads a YOLOv8 model from a Roboflow workspace.
+download_model.py — Downloads a model from a Roboflow workspace and exports it to ONNX.
 
 Usage:
     python download_model.py YOUR_API_KEY WORKSPACE PROJECT
@@ -42,30 +42,29 @@ def main():
     latest = versions[-1] if versions else project.version(1)
     print(f"Downloading version {latest.version}...")
 
-    # Download to a temp folder then move the .pt into models/
-    latest.download("yolov8", location="rf_download")
+    # Download ONNX format directly
+    latest.download("onnx", location="rf_download")
 
-    # Find the .pt file
-    pt_file = None
+    # Find the .onnx file
+    onnx_file = None
     for root, dirs, files in os.walk("rf_download"):
         for f in files:
-            if f.endswith(".pt"):
-                pt_file = os.path.join(root, f)
+            if f.endswith(".onnx"):
+                onnx_file = os.path.join(root, f)
                 break
-        if pt_file:
+        if onnx_file:
             break
 
-    if pt_file is None:
-        print("ERROR: No .pt file found in download. Check rf_download/ folder manually.")
+    if onnx_file is None:
+        print("ERROR: No .onnx file found in download. Check rf_download/ folder manually.")
         sys.exit(1)
 
-    dest = os.path.join("models", "roblox-character.pt")
-    shutil.copy2(pt_file, dest)
+    dest = os.path.join("models", f"{project_name}.onnx")
+    shutil.copy2(onnx_file, dest)
     shutil.rmtree("rf_download", ignore_errors=True)
 
     print(f"\nDone! Model saved to: {dest}")
-    print("In the app: select 'roblox-character.pt' from the Model dropdown")
-    print("and check 'All classes' since this is a custom model (not COCO class 0).")
+    print(f"In the app: select '{os.path.basename(dest)}' from the Model dropdown.")
 
 if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
