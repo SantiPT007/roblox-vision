@@ -32,6 +32,9 @@ cursor_follow:
   aim_y_reduce_delay: 0.6       # seconds before Y correction is suppressed
   snapback_threshold: 15        # pixels of unexpected cursor movement that triggers a pause
   snapback_pause_ms: 200        # ms to pause the lock after a snap-back is detected
+  color_filter: null            # null | "red" | "blue" | "green" | "orange" | "purple" | "custom"
+  color_filter_hue_min: 0       # OpenCV hue 0–179 — used only when color_filter is "custom"
+  color_filter_hue_max: 10      # OpenCV hue 0–179 — used only when color_filter is "custom"
   pid:
     kp: 0.4
     ki: 0.0

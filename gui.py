@@ -292,6 +292,46 @@ class ControlPanel(QWidget):
         )
         form.addRow("", depth_chk)
 
+        # Color filter
+        self._color_filter_combo = QComboBox()
+        self._color_filter_combo.addItems(["Off", "Red", "Blue", "Green", "Orange", "Purple", "Custom"])
+        _raw_filter = cf.get("color_filter") or ""
+        _display_filter = _raw_filter.capitalize() if _raw_filter else "Off"
+        self._color_filter_combo.setCurrentText(_display_filter)
+        form.addRow("Team color filter:", self._color_filter_combo)
+
+        # Custom hue range (shown only when Custom is selected)
+        self._custom_hue_widget = QWidget()
+        hue_row = QHBoxLayout(self._custom_hue_widget)
+        hue_row.setContentsMargins(0, 0, 0, 0)
+        self._hue_min_spin = QSpinBox()
+        self._hue_min_spin.setRange(0, 179)
+        self._hue_min_spin.setValue(cf.get("color_filter_hue_min", 0))
+        self._hue_min_spin.setToolTip("Minimum hue (OpenCV 0–179). Red≈0, Green≈60, Blue≈120")
+        self._hue_max_spin = QSpinBox()
+        self._hue_max_spin.setRange(0, 179)
+        self._hue_max_spin.setValue(cf.get("color_filter_hue_max", 10))
+        self._hue_max_spin.setToolTip("Maximum hue (OpenCV 0–179). Wrap-around supported: min > max")
+        hue_row.addWidget(QLabel("Hue min:"))
+        hue_row.addWidget(self._hue_min_spin)
+        hue_row.addWidget(QLabel("  max:"))
+        hue_row.addWidget(self._hue_max_spin)
+        self._custom_hue_widget.setVisible(_display_filter == "Custom")
+        form.addRow("", self._custom_hue_widget)
+
+        def _on_color_filter_changed(text: str) -> None:
+            value = None if text == "Off" else text.lower()
+            self._on_change("cursor_follow", "color_filter", value)
+            self._custom_hue_widget.setVisible(text == "Custom")
+
+        self._color_filter_combo.currentTextChanged.connect(_on_color_filter_changed)
+        self._hue_min_spin.valueChanged.connect(
+            lambda v: self._on_change("cursor_follow", "color_filter_hue_min", v)
+        )
+        self._hue_max_spin.valueChanged.connect(
+            lambda v: self._on_change("cursor_follow", "color_filter_hue_max", v)
+        )
+
         # Head height ratio
         hhr_spin = QSpinBox()
         hhr_spin.setRange(5, 50)

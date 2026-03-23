@@ -120,6 +120,14 @@ def _is_vk_down(vk: int) -> bool:
 _LOCK_GRACE_FRAMES = 8
 
 
+def _hue_in_range(h: float, lo: int, hi: int) -> bool:
+    """Return True if OpenCV hue h (0-179) falls in [lo, hi], with wrap-around support."""
+    if lo <= hi:
+        return lo <= h <= hi
+    # Wrap-around (e.g. lo=165, hi=15 for red that spans 0)
+    return h >= lo or h <= hi
+
+
 class CursorFollower:
     def __init__(self, config: dict, get_tracks_fn, screen_size: Tuple[int, int]):
         self._cfg          = config["cursor_follow"]
@@ -316,7 +324,21 @@ class CursorFollower:
     def _ref_point(self) -> Tuple[int, int]:
         return _get_cursor_pos()
 
+    def _apply_color_filter(self, tracks: List[dict]) -> List[dict]:
+        """Filter tracks to only those matching the configured team color."""
+        color_filter = self._cfg.get("color_filter")
+        if not color_filter or color_filter in ("null", "none", "off", ""):
+            return tracks
+        if color_filter == "custom":
+            h_min = int(self._cfg.get("color_filter_hue_min", 0))
+            h_max = int(self._cfg.get("color_filter_hue_max", 10))
+            return [t for t in tracks
+                    if t.get("team_color_hue") is not None
+                    and _hue_in_range(t["team_color_hue"], h_min, h_max)]
+        return [t for t in tracks if t.get("team_color") == color_filter]
+
     def _select_target(self, tracks: List[dict]) -> Optional[dict]:
+        tracks = self._apply_color_filter(tracks)
         # Sticky: keep locked target if still visible
         if self._locked_target_id is not None:
             for t in tracks:
