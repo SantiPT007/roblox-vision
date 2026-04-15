@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🎯 character-tracker
+# 🎯 Roblox Vision
 
 **Real-time AI character detection, tracking, and overlay for Roblox on Windows**
 
