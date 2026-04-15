@@ -10,7 +10,7 @@
 ![Runtime](https://img.shields.io/badge/Runtime-ONNX-FF6F00?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 
-*No CUDA. No PyTorch. No process injection. No memory reading.*
+*No process injection. No memory reading.*
 
 </div>
 
