@@ -8,7 +8,7 @@
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D4?style=flat-square&logo=windows&logoColor=white)
 ![GPU](https://img.shields.io/badge/GPU-DirectX%2012%20%28DirectML%29-76B900?style=flat-square&logo=nvidia&logoColor=white)
 ![Runtime](https://img.shields.io/badge/Runtime-ONNX-FF6F00?style=flat-square)
-![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
+![License](https://img.shields.io/badge/License-AGPL--3.0-green?style=flat-square)
 
 *No process injection. No memory reading.*
 
@@ -304,4 +304,6 @@ Big thanks to **[Axiom AI](https://github.com/iisHong0w0/Axiom-AI-Aimbot)** — 
 
 ## 📜 License
 
-MIT — see [LICENSE](LICENSE) for details.
+AGPL-3.0 — see [LICENSE](LICENSE) for details.
+
+This project links against PyQt6 (GPL-3.0) and boxmot (AGPL-3.0), which require the combined work to be distributed under AGPL-3.0 or a compatible license.
